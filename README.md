@@ -162,6 +162,40 @@ Two spots where the SDK's authorization-server metadata is fixed and the kit com
 
 The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, and `seedTestToken()` (test-mode only).
 
+## Audit logging
+
+`createAuditLog(config)` returns an opt-in audit logger: an append-only JSONL trail of tool calls and feedback, plus a `registerLogged` wrapper that times each tool handler and records its outcome. It writes two files under `logDir` — `tool-calls.jsonl` (one line per call: timestamp, tool name, a summarized args object, ok/error, duration, and any error text) and `feedback.jsonl`. The kit holds no environment coupling: you supply the log directory, which argument names to redact, and the enable/suppress gates.
+
+```ts
+import { createAuditLog } from 'mcp-server-kit';
+
+const { registerLogged, logFeedback, isLoggingEnabled } = createAuditLog({
+  logDir: process.env.LOG_DIR ?? './logs',
+  // Argument names whose values may carry user content; redacted at any depth, keeping the shape.
+  redactedFields: ['content', 'value'],
+  enabled: () => process.env.LOG_ENABLED !== 'false',
+  suppressWrites: () => process.env.NODE_ENV === 'test',
+});
+
+// In your registerTools function, register a tool through the wrapper instead of server.registerTool:
+registerLogged(server, 'my_tool', def, async (args) => jsonResult(await doWork(args)));
+```
+
+Argument summarization keeps logs small and content-free: strings over 80 characters become a `<str:Nchars>` marker, and any field named in `redactedFields` becomes `<redacted:…>` regardless of type or depth, so a record retains which tool ran and what argument keys it received without recording the values themselves.
+
+### Config
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `logDir` | `string` | Directory the JSONL files are written to; created lazily on the first write. |
+| `redactedFields` | `Iterable<string>?` | Argument names whose values are always redacted, matched by exact key at any depth. Default: redact nothing. |
+| `toolCallsFile` | `string?` | Filename for tool-call records. Default `tool-calls.jsonl`. |
+| `feedbackFile` | `string?` | Filename for feedback records. Default `feedback.jsonl`. |
+| `enabled` | `() => boolean?` | Evaluated live on each call; when it returns false nothing is written and `isLoggingEnabled()` reports false. Default: on. |
+| `suppressWrites` | `() => boolean?` | Evaluated live; when true, records are summarized but never written (for test runs). Default: off. |
+
+The returned `AuditLogger` exposes `registerLogged`, `logToolCall`, `logFeedback`, `summarizeArgs`, and `isLoggingEnabled`.
+
 ## Process helpers
 
 `startServer({ app, port, host?, onListen?, onShutdown? })` starts listening and registers `SIGTERM`/`SIGINT` handlers that run `onShutdown` (persist state here) before exiting, so a container restart doesn't drop in-memory data.
@@ -173,4 +207,4 @@ bun install
 bun test
 ```
 
-The suite assembles the fixture server and exercises it over HTTP: the health contract, `/mcp` method gating and tool listing, CORS behavior, the result-helper shapes observable through the fixture's `echo` tool, the full auth contract (discovery, the PKCE flow, all three approval-gate configurations, static bearer, and error shapes), and token persistence across a spawned-process restart.
+The suite assembles the fixture server and exercises it over HTTP: the health contract, `/mcp` method gating and tool listing, CORS behavior, the result-helper shapes observable through the fixture's `echo` tool, the full auth contract (discovery, the PKCE flow, all three approval-gate configurations, static bearer, and error shapes), token persistence across a spawned-process restart, and the audit-logging module's summarization, record shapes, gates, and `registerLogged` wrapper.
