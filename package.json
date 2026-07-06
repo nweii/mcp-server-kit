@@ -1,0 +1,28 @@
+{
+  "name": "mcp-server-kit",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "bun@1.3.11",
+  "description": "Shared scaffolding for remote MCP servers on Bun + Express + the MCP SDK: an app factory, tool-result helpers, and process/shutdown helpers.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "fixture": "bun run fixture/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.1.0",
+    "zod": "^3.24.2"
+  }
+}
