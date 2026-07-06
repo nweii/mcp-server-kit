@@ -7,6 +7,7 @@ import type { Express, NextFunction, Request, RequestHandler, Response } from 'e
 import { timingSafeEqual } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Auth } from './auth.js';
 
 // Registers the server's tools onto a fresh McpServer. Called once per POST /mcp request, so a
 // slow or async registration (reading a store, awaiting I/O) is supported.
@@ -18,9 +19,12 @@ export interface CreateAppOptions {
   version: string;
   // Registers the server's tools onto each per-request McpServer instance.
   registerTools: RegisterTools;
-  // Middleware guarding /mcp. Auth lives outside the kit; pass the check you want (a real OAuth
-  // bearer middleware, a static-token check, or a stub in tests). Runs before every /mcp request.
-  authMiddleware: RequestHandler;
+  // The auth module guarding /mcp. When supplied, its OAuth routes (discovery, /authorize,
+  // /oauth/token) are mounted and its bearer check gates /mcp. Provide this or authMiddleware.
+  auth?: Auth;
+  // Bare middleware guarding /mcp, as an alternative to `auth` when no OAuth routes are needed
+  // (a static-token check, or a stub in tests). Ignored when `auth` is supplied. Runs before /mcp.
+  authMiddleware?: RequestHandler;
   // Bearer token for /health. When omitted the route responds 404, so the secret pasted into an
   // uptime monitor grants nothing and rotates independently of the /mcp auth.
   healthToken?: string;
@@ -109,6 +113,11 @@ function makeHealthHandler(opts: CreateAppOptions): RequestHandler {
 }
 
 export function createApp(opts: CreateAppOptions): Express {
+  const authMiddleware = opts.auth ? opts.auth.authMiddleware : opts.authMiddleware;
+  if (!authMiddleware) {
+    throw new Error('createApp requires either an `auth` module or an `authMiddleware` to guard /mcp');
+  }
+
   const app = express();
   const allowedOrigins = opts.corsOrigins ?? null;
 
@@ -128,16 +137,19 @@ export function createApp(opts: CreateAppOptions): Express {
   // Liveness probe — gated by its own health token, not the /mcp auth middleware.
   app.get('/health', makeHealthHandler(opts));
 
+  // OAuth surface (discovery, /authorize, /oauth/token) from the auth module, when one is supplied.
+  if (opts.auth) app.use(opts.auth.routes);
+
   // Streamable HTTP clients probe GET with Accept: text/event-stream; 405 means "no standalone
   // SSE" (not 404). Stateless transport has no session to delete, so DELETE is 405 too.
   const methodNotAllowed: RequestHandler = (_req, res) => {
     res.setHeader('Allow', 'POST');
     res.status(405).end();
   };
-  app.get('/mcp', opts.authMiddleware, methodNotAllowed);
-  app.delete('/mcp', opts.authMiddleware, methodNotAllowed);
+  app.get('/mcp', authMiddleware, methodNotAllowed);
+  app.delete('/mcp', authMiddleware, methodNotAllowed);
 
-  app.post('/mcp', opts.authMiddleware, async (req, res) => {
+  app.post('/mcp', authMiddleware, async (req, res) => {
     if (!opts.testMode) {
       const body = req.body as { method?: string; params?: { name?: string } };
       const mcpMethod = body?.method ?? '?';
