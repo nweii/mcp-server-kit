@@ -96,19 +96,19 @@ test('health is 503 when the liveness probe throws', async () => {
 // --- /mcp method gating ------------------------------------------------------
 
 test('GET /mcp without a token is 401 (auth seam runs first)', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   expect((await fetch(`${base}/mcp`)).status).toBe(401);
 });
 
 test('GET /mcp with a valid token is 405 and advertises POST', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${FIXTURE_TOKEN}` } });
   expect(res.status).toBe(405);
   expect(res.headers.get('allow')).toBe('POST');
 });
 
 test('DELETE /mcp with a valid token is 405', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await fetch(`${base}/mcp`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${FIXTURE_TOKEN}` },
@@ -117,7 +117,7 @@ test('DELETE /mcp with a valid token is 405', async () => {
 });
 
 test('POST /mcp without a token is 401', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await mcp(base, null, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
   expect(res.status).toBe(401);
 });
@@ -125,7 +125,7 @@ test('POST /mcp without a token is 401', async () => {
 // --- Tool listing and result-helper shapes -----------------------------------
 
 test('POST /mcp initialize returns the configured server name', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, {
     jsonrpc: '2.0',
     id: 1,
@@ -138,7 +138,7 @@ test('POST /mcp initialize returns the configured server name', async () => {
 });
 
 test('tools/list advertises the registered echo tool', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const body = parseRpc(await res.text());
   const names = (body.result.tools as Array<{ name: string }>).map((t) => t.name);
@@ -146,7 +146,7 @@ test('tools/list advertises the registered echo tool', async () => {
 });
 
 test('jsonResult surfaces both a text block and structuredContent', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, {
     jsonrpc: '2.0',
     id: 3,
@@ -160,7 +160,7 @@ test('jsonResult surfaces both a text block and structuredContent', async () => 
 });
 
 test('errorResult comes back as isError with the message text', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, {
     jsonrpc: '2.0',
     id: 4,
@@ -175,7 +175,7 @@ test('errorResult comes back as isError with the message text', async () => {
 // --- CORS --------------------------------------------------------------------
 
 test('default CORS allows any origin', async () => {
-  const base = await listen(createFixtureApp());
+  const base = await listen(createFixtureApp().app);
   const res = await fetch(`${base}/health`, { method: 'OPTIONS', headers: { Origin: 'https://a.example' } });
   expect(res.status).toBe(204);
   expect(res.headers.get('access-control-allow-origin')).toBe('*');

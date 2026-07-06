@@ -1,29 +1,50 @@
-// A minimal MCP server assembled entirely from the kit: a stub bearer-check standing in for the
-// auth module, one trivial registered tool, and the app factory. Serves as the kit's own example
-// and the target of its HTTP test suite.
-import type { RequestHandler } from 'express';
+// A minimal MCP server assembled entirely from the kit: the real auth module (OAuth + bearer gate),
+// one trivial registered tool, and the app factory. Serves as the kit's own example and the target
+// of its HTTP test suite. Running the file directly starts a real listener, which the token-
+// persistence test spawns as a subprocess so persistence is exercised across a true process boundary.
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { z } from 'zod';
-import { createApp, startServer, jsonResult, errorResult } from '../src/index.js';
+import { createApp, createAuth, startServer, jsonResult, errorResult } from '../src/index.js';
+import type { AuthConfig } from '../src/index.js';
 
-// Stub auth seam: accept a single static bearer. The real auth module plugs in here later.
-export const FIXTURE_TOKEN = process.env.FIXTURE_TOKEN ?? 'fixture-token';
+export const FIXTURE_CLIENT_ID = process.env.FIXTURE_CLIENT_ID ?? 'test-client';
+export const FIXTURE_REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
+// A static bearer the default fixture always accepts, so tests that only need a valid /mcp token
+// don't have to run the full OAuth flow first.
+export const FIXTURE_TOKEN = process.env.FIXTURE_STATIC_BEARER ?? 'fixture-token';
 
-const stubBearer: RequestHandler = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token !== FIXTURE_TOKEN) {
-    res.setHeader('WWW-Authenticate', 'Bearer');
-    res.status(401).json({ error: 'unauthorized' });
-    return;
-  }
-  next();
-};
+// Build an auth config from the environment, so the same fixture can be spawned as a real server
+// under whatever gate configuration a test wants. Defaults to the explicit-open gate so a bare
+// `bun run fixture/server.ts` boots without extra env; tests override to exercise the other gates.
+export function authConfigFromEnv(port: number): AuthConfig {
+  const password = process.env.FIXTURE_APPROVAL_PASSWORD || undefined;
+  const clientSecret = process.env.FIXTURE_CLIENT_SECRET || undefined;
+  const open = process.env.FIXTURE_APPROVAL_OPEN === '1';
+  // At least one guard must be present. When the caller sets none, fall back to open so the fixture
+  // still boots; the guard-refusal path is exercised by constructing createAuth directly in tests.
+  const approvalOpen = open || (!password && !clientSecret);
 
-export function createFixtureApp() {
-  return createApp({
+  return {
+    baseUrl: process.env.MCP_BASE_URL ?? `http://localhost:${port}`,
+    clientId: FIXTURE_CLIENT_ID,
+    displayName: process.env.FIXTURE_DISPLAY_NAME ?? 'mcp-server-kit-fixture',
+    tokenStorePath: process.env.TOKEN_STORE_PATH ?? join(tmpdir(), `kit-fixture-tokens-${process.pid}.json`),
+    clientSecret,
+    staticBearerToken: FIXTURE_TOKEN,
+    approvalPassword: password,
+    approvalOpen,
+    approvalPrompt: 'Allow this client to call the fixture MCP tools?',
+    testMode: process.env.FIXTURE_AUTH_TEST_MODE === '1',
+  };
+}
+
+export function createFixtureApp(port = 0) {
+  const auth = createAuth(authConfigFromEnv(port));
+  const app = createApp({
     name: 'mcp-server-kit-fixture',
     version: '0.0.0',
-    authMiddleware: stubBearer,
+    auth,
     healthToken: process.env.FIXTURE_HEALTH_TOKEN,
     testMode: process.env.FIXTURE_TEST_MODE === '1',
     registerTools(server) {
@@ -43,14 +64,18 @@ export function createFixtureApp() {
       );
     },
   });
+  return { app, auth };
 }
 
-// Running the file directly starts a real listener (the quickstart entry point).
+// Running the file directly starts a real listener (the quickstart entry point and the target of
+// the spawned-process persistence test).
 if (import.meta.main) {
   const port = parseInt(process.env.PORT ?? '3000', 10);
+  const { app, auth } = createFixtureApp(port);
   startServer({
-    app: createFixtureApp(),
+    app,
     port,
     onListen: () => console.log(`fixture MCP server listening on port ${port}`),
+    onShutdown: () => auth.saveTokens(),
   });
 }
