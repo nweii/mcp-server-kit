@@ -39,11 +39,13 @@ export interface FeedbackLog {
   suggested_tool?: string;
 }
 
-// The registerTool def and handler are typed `any` because the SDK's registerTool is heavily generic;
-// re-typing it here just fights the compiler with no runtime benefit.
+// The registerTool def and the handler's args are typed `any` because the SDK's registerTool is
+// heavily generic; re-typing it here just fights the compiler with no runtime benefit. `any` on the
+// handler args (rather than `unknown`) also lets callers pass strongly-typed handlers unchanged.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ToolDef = any;
-type ToolHandler = (args: unknown) => Promise<ToolResult>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ToolHandler = (args: any) => Promise<ToolResult>;
 
 export interface AuditLogger {
   // Wraps server.registerTool with timing + JSONL logging so every call lands in the audit trail with
