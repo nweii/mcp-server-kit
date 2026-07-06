@@ -101,7 +101,9 @@ Tool handlers return one of three shapes so the MCP `CallToolResult` is built on
 
 `createAuth(config)` returns an OAuth 2.1 authorization server for the Claude-facing side of your MCP server: discovery documents, an authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware that guards `/mcp`. Pass the result to `createApp` as `auth`; the factory mounts its routes and wires its middleware.
 
-The module carries its own OAuth implementation rather than delegating to the SDK's auth router, so the exact HTTP surface — endpoint paths (`/oauth/token`, the `.well-known` documents), error bodies, `WWW-Authenticate` headers, and token/code TTLs — stays fully under your control. Each `createAuth` call is self-contained: its token store, code store, and configuration are per-instance, with no module-level singleton state.
+The module wraps the official MCP SDK's authorization server (`mcpAuthRouter` and `requireBearerAuth`) around a small custom provider, so it tracks the SDK's OAuth implementation and spec compliance for the wire surface (discovery documents, endpoint paths, error and `WWW-Authenticate` shapes). The kit's provider supplies only the three behaviors the SDK leaves to the server: a password-gated approval page, a static-bearer fallback, and a file-persisted token store. Each `createAuth` call is self-contained: its token store, code store, and configuration are per-instance, with no module-level singleton state.
+
+The OAuth endpoints are those the SDK emits — notably the token endpoint is `/token` (not `/oauth/token`), and discovery is served at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
 
 ```ts
 import { createApp, createAuth, startServer } from 'mcp-server-kit';
@@ -131,16 +133,23 @@ The kit takes resolved values, not env-var names — map your own environment at
 | Configuration | Set | Behavior |
 | --- | --- | --- |
 | Password gate | `approvalPassword` | The approval page shows a password field; a code is issued only when the correct password is posted. |
-| Client-secret guard | `clientSecret` (no password) | The approval page is click-to-approve, but token exchange requires the secret via `client_secret_post`, so a code alone is useless. Discovery drops the `none` auth method. |
+| Client-secret guard | `clientSecret` (no password) | The approval page is click-to-approve, but token exchange requires the secret via `client_secret_post`, so a code alone is useless. |
 | Explicit open | `approvalOpen: true` | Click-to-approve with no password or secret; declares that an external gateway (reverse proxy, zero-trust layer) already guards `/authorize`. |
+
+### SDK behaviors to know
+
+Two spots where the SDK's authorization-server metadata is fixed and the kit compensates in the provider:
+
+- **Client secret vs. advertised auth methods.** When `clientSecret` is set, the token endpoint enforces it (a code cannot be exchanged without the matching secret). The SDK's discovery document still advertises `token_endpoint_auth_methods_supported: ['client_secret_post', 'none']` — the `none` method cannot be removed via configuration in this SDK version. Clients that read discovery and try `none` are rejected at the token endpoint with `invalid_client`. This mismatch is cosmetic (discovery over-advertises), not a security gap.
+- **Refresh tokens.** The SDK's discovery always lists `refresh_token` in `grant_types_supported`. This server does not issue or accept refresh tokens (tokens live 30 days; clients re-authorize). A refresh-token request is rejected cleanly with `400 invalid_grant` rather than failing as a server error.
 
 ### Config
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `baseUrl` | `string \| (() => string)` | Public base URL, used in discovery and the `WWW-Authenticate` hint. Pass a getter to resolve live (e.g. when the port is known only after binding). |
+| `baseUrl` | `string` | Public base URL, baked into the discovery documents and the `WWW-Authenticate` hint at construction (the SDK resolves it once, not live per request). |
 | `clientId` | `string` | The single OAuth `client_id` accepted. |
-| `displayName` | `string` | Shown on the approval page ("Authorize \<displayName>"). |
+| `displayName` | `string` | Shown on the approval page ("Authorize \<displayName>") and as the protected-resource name. |
 | `tokenStorePath` | `string` | File the issued tokens persist to; read at construction (unless `testMode`) and rewritten on each issuance and `saveTokens()`. |
 | `clientSecret` | `string?` | Enables the client-secret guard (see above). |
 | `allowedRedirectUris` | `string[]?` | Redirect-URI allowlist; defaults to `DEFAULT_ALLOWED_REDIRECT_URIS` (Claude, ChatGPT connectors, Cursor, Poke). |
@@ -149,6 +158,7 @@ The kit takes resolved values, not env-var names — map your own environment at
 | `approvalOpen` | `boolean?` | Declares `/authorize` externally guarded. |
 | `approvalPrompt` | `string?` | Body text on the approval page. |
 | `testMode` | `boolean?` | Skips the disk load at construction and enables `seedTestToken()`. |
+| `disableRateLimit` | `boolean?` | Turns off the SDK's per-endpoint rate limiting (on by default). |
 
 The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, and `seedTestToken()` (test-mode only).
 

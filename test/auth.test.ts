@@ -1,12 +1,13 @@
-// HTTP-level suite for the auth module's full OAuth contract: discovery documents, the PKCE
-// authorize→token flow, all three approval-gate configurations, the static-bearer fallback, bearer
-// middleware error shapes, and the startup refusal when /authorize would be unguarded. Assertions
-// pin the exact observable surface (paths, status codes, error bodies, headers, TTLs) so the wire
-// contract is fixed against accidental change. Tests speak HTTP only, except the direct createAuth
-// calls that check construction-time behavior (guard refusal, test-mode seeding).
+// HTTP-level suite for the auth module's OAuth contract as the MCP SDK's auth server emits it:
+// discovery documents, the PKCE authorize→token flow through the SDK endpoints, all three
+// approval-gate configurations, the static-bearer fallback, the SDK bearer-middleware error shapes,
+// and the startup refusal when /authorize would be unguarded. Assertions pin the SDK-shaped surface
+// (token endpoint at /token, spec-shaped redirect/JSON authorize errors, SDK 401 bodies) at the
+// feature level, exercising each behavior end to end over HTTP.
 import { afterEach, expect, test } from 'bun:test';
 import type { Server } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createApp, createAuth } from '../src/index.js';
@@ -23,32 +24,39 @@ function storePath(): string {
   return join(tmpdir(), `kit-auth-${randomUUID()}.json`);
 }
 
-async function listen(app: ReturnType<typeof createApp>): Promise<{ base: string; server: Server }> {
-  return new Promise((resolve) => {
-    const server = app.listen(0, '127.0.0.1', () => {
-      open.push(server);
-      const addr = server.address();
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, () => {
+      const addr = srv.address();
       const port = typeof addr === 'object' && addr ? addr.port : 0;
-      resolve({ base: `http://127.0.0.1:${port}`, server });
+      srv.close(() => resolve(port));
     });
   });
 }
 
-// Stand up an app + auth with `overrides`, listen, and return the live base URL. The auth module's
-// baseUrl getter is wired to the resolved URL so discovery documents report the real port.
+// Grab a free port, build auth + app with baseUrl pinned to it (so discovery reports the real URL),
+// then listen on that exact port. Returns the live base URL.
 async function standup(overrides: Partial<AuthConfig> = {}): Promise<string> {
-  let base = 'http://localhost:0';
+  const port = await freePort();
+  const base = `http://localhost:${port}`;
   const auth = createAuth({
-    baseUrl: () => base,
+    baseUrl: base,
     clientId: 'test-client',
     displayName: 'kit-auth-fixture',
     tokenStorePath: storePath(),
     approvalPassword: 'sekret',
+    disableRateLimit: true,
     ...overrides,
   });
   const app = createApp({ name: 'kit-auth-fixture', version: '0.0.0', auth, testMode: true, registerTools: () => {} });
-  const { base: resolved } = await listen(app);
-  base = resolved;
+  await new Promise<void>((resolve) => {
+    const server = app.listen(port, '127.0.0.1', () => {
+      open.push(server);
+      resolve();
+    });
+  });
   return base;
 }
 
@@ -78,7 +86,7 @@ async function approve(base: string, challenge: string, extra: Record<string, st
 }
 
 async function exchange(base: string, code: string, verifier: string, extra: Record<string, string> = {}) {
-  return fetch(`${base}/oauth/token`, {
+  return fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -92,36 +100,31 @@ async function exchange(base: string, code: string, verifier: string, extra: Rec
   });
 }
 
-// --- Discovery ---------------------------------------------------------------
+// --- Discovery (SDK-emitted) -------------------------------------------------
 
-test('authorization-server metadata reports the pinned OAuth capabilities', async () => {
+test('authorization-server metadata is the SDK-emitted document', async () => {
   const base = await standup();
   const res = await fetch(`${base}/.well-known/oauth-authorization-server`);
   expect(res.status).toBe(200);
   const body = (await res.json()) as Record<string, unknown>;
-  expect(body.issuer).toBe(base);
+  expect(body.issuer).toBe(`${base}/`); // URL.href normalizes with a trailing slash
   expect(body.authorization_endpoint).toBe(`${base}/authorize`);
-  expect(body.token_endpoint).toBe(`${base}/oauth/token`);
+  expect(body.token_endpoint).toBe(`${base}/token`); // SDK path, not /oauth/token
   expect(body.response_types_supported).toEqual(['code']);
-  expect(body.grant_types_supported).toEqual(['authorization_code']);
   expect(body.code_challenge_methods_supported).toEqual(['S256']);
+  // The SDK fixes these two; a configured client secret does not reshape them (see the secret test).
+  expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
   expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
 });
 
-test('a configured client secret drops the "none" auth method from discovery', async () => {
-  const base = await standup({ approvalPassword: undefined, clientSecret: 'shh' });
-  const body = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
-  expect(body.token_endpoint_auth_methods_supported).toEqual(['client_secret_post']);
-});
-
-test('protected-resource metadata points at this server as its own auth server', async () => {
+test('protected-resource metadata points at this server', async () => {
   const base = await standup();
   const body = (await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json()) as Record<string, unknown>;
-  expect(body.resource).toBe(base);
-  expect(body.authorization_servers).toEqual([base]);
+  expect(body.resource).toBe(`${base}/`);
+  expect(body.authorization_servers).toEqual([`${base}/`]);
 });
 
-// --- GET /authorize validation -----------------------------------------------
+// --- GET /authorize validation (SDK phases) ----------------------------------
 
 test('GET /authorize renders the approval page for valid params', async () => {
   const base = await standup();
@@ -132,33 +135,42 @@ test('GET /authorize renders the approval page for valid params', async () => {
   expect(await res.text()).toContain('Approve');
 });
 
-test('GET /authorize rejects each invalid parameter with its pinned 400 body', async () => {
+test('phase-1 errors are direct 400 JSON (unknown client, unregistered redirect)', async () => {
+  const base = await standup();
+  const { challenge } = pkce();
+
+  const badClient = await fetch(
+    `${base}/authorize?response_type=code&client_id=someone-else&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    { redirect: 'manual' },
+  );
+  expect(badClient.status).toBe(400);
+  expect(((await badClient.json()) as { error?: string }).error).toBe('invalid_client');
+
+  const badRedirect = await fetch(
+    `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent('https://evil.example/cb')}&code_challenge=${challenge}&code_challenge_method=S256`,
+    { redirect: 'manual' },
+  );
+  expect(badRedirect.status).toBe(400);
+  expect(((await badRedirect.json()) as { error?: string }).error).toBe('invalid_request');
+});
+
+test('phase-2 errors redirect to the client with error params (bad response_type, missing PKCE)', async () => {
   const base = await standup();
   const { challenge } = pkce();
 
   const badType = await fetch(
     `${base}/authorize?response_type=token&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    { redirect: 'manual' },
   );
-  expect(badType.status).toBe(400);
-  expect(await badType.text()).toBe('Unsupported response_type');
-
-  const badClient = await fetch(
-    `${base}/authorize?response_type=code&client_id=someone-else&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`,
-  );
-  expect(badClient.status).toBe(400);
-  expect(await badClient.text()).toBe('Unknown client_id');
-
-  const badRedirect = await fetch(
-    `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent('https://evil.example/cb')}&code_challenge=${challenge}&code_challenge_method=S256`,
-  );
-  expect(badRedirect.status).toBe(400);
-  expect(await badRedirect.text()).toBe('redirect_uri not allowed');
+  expect(badType.status).toBe(302);
+  expect(new URL(badType.headers.get('location')!).searchParams.get('error')).toBe('invalid_request');
 
   const noPkce = await fetch(
     `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}`,
+    { redirect: 'manual' },
   );
-  expect(noPkce.status).toBe(400);
-  expect(await noPkce.text()).toBe('PKCE with S256 is required');
+  expect(noPkce.status).toBe(302);
+  expect(new URL(noPkce.headers.get('location')!).searchParams.get('error')).toBe('invalid_request');
 });
 
 // --- Approval gate: password -------------------------------------------------
@@ -200,7 +212,7 @@ test('password gate: the approval redirect preserves the state parameter', async
 
 // --- Full PKCE flow ----------------------------------------------------------
 
-test('full PKCE flow: approve → exchange → token accepted on /mcp, with the pinned token body', async () => {
+test('full PKCE flow: approve → exchange → token accepted on /mcp, with the SDK token body', async () => {
   const base = await standup();
   const { verifier, challenge } = pkce();
   const r = await approve(base, challenge, { password: 'sekret' });
@@ -218,7 +230,7 @@ test('full PKCE flow: approve → exchange → token accepted on /mcp, with the 
   expect(mcp.status).toBe(405); // a valid token reaches the POST-only handler
 });
 
-test('token exchange fails with a bad PKCE verifier', async () => {
+test('token exchange fails with a bad PKCE verifier (SDK local validation)', async () => {
   const base = await standup();
   const { challenge } = pkce();
   const r = await approve(base, challenge, { password: 'sekret' });
@@ -238,39 +250,44 @@ test('an authorization code is single-use', async () => {
   expect(((await second.json()) as { error?: string }).error).toBe('invalid_grant');
 });
 
-// --- Token endpoint error shapes ---------------------------------------------
+// --- Token endpoint error shapes (SDK) ---------------------------------------
 
-test('token endpoint pins its request-error bodies', async () => {
+test('token endpoint reports SDK error bodies for unsupported grant and unknown code', async () => {
   const base = await standup();
 
-  const badGrant = await fetch(`${base}/oauth/token`, {
+  const badGrant = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'client_credentials' }),
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: 'test-client' }),
   });
   expect(badGrant.status).toBe(400);
   expect(((await badGrant.json()) as { error?: string }).error).toBe('unsupported_grant_type');
-
-  const noCode = await fetch(`${base}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'authorization_code' }),
-  });
-  expect(noCode.status).toBe(400);
-  const noCodeBody = (await noCode.json()) as { error?: string; error_description?: string };
-  expect(noCodeBody.error).toBe('invalid_request');
-  expect(noCodeBody.error_description).toBe('code is required');
 
   const unknownCode = await exchange(base, 'no-such-code', 'whatever');
   expect(unknownCode.status).toBe(400);
   expect(((await unknownCode.json()) as { error?: string }).error).toBe('invalid_grant');
 });
 
+test('the refresh_token grant is advertised but rejected cleanly (400, not 500)', async () => {
+  const base = await standup();
+  const res = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'anything', client_id: 'test-client' }),
+  });
+  expect(res.status).toBe(400);
+  expect(((await res.json()) as { error?: string }).error).toBe('invalid_grant');
+});
+
 // --- Approval gate: client secret --------------------------------------------
 
-test('client-secret gate: click-to-approve issues a code, token exchange requires the secret', async () => {
+test('client-secret gate: enforced server-side even though discovery still advertises "none"', async () => {
   const base = await standup({ approvalPassword: undefined, clientSecret: 'shh' });
   const { verifier, challenge } = pkce();
+
+  // Metadata still advertises the "none" method (SDK-fixed), but the secret is enforced anyway.
+  const disc = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(disc.token_endpoint_auth_methods_supported).toEqual(['client_secret_post', 'none']);
 
   // No password field on the approval page under the client-secret gate.
   const page = await fetch(
@@ -278,12 +295,12 @@ test('client-secret gate: click-to-approve issues a code, token exchange require
   );
   expect(await page.text()).not.toContain('type="password"');
 
-  const r = await approve(base, challenge); // no password posted
+  const r = await approve(base, challenge); // click-to-approve, no password posted
   expect(r.status).toBe(302);
   expect(r.code).toBeTruthy();
 
   const withoutSecret = await exchange(base, r.code!, verifier);
-  expect(withoutSecret.status).toBe(401);
+  expect(withoutSecret.status).toBe(400);
   expect(((await withoutSecret.json()) as { error?: string }).error).toBe('invalid_client');
 });
 
@@ -320,14 +337,15 @@ test('static bearer: the configured token is accepted on /mcp', async () => {
   expect(res.status).toBe(405);
 });
 
-// --- Bearer middleware error shapes ------------------------------------------
+// --- Bearer middleware error shapes (SDK) ------------------------------------
 
-test('bearer middleware pins its 401 bodies and WWW-Authenticate headers', async () => {
+test('bearer middleware reports SDK 401 bodies and WWW-Authenticate headers', async () => {
   const base = await standup();
 
   const noHeader = await fetch(`${base}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   expect(noHeader.status).toBe(401);
-  expect(await noHeader.json()).toEqual({ error: 'unauthorized' });
+  expect(((await noHeader.json()) as { error?: string }).error).toBe('invalid_token');
+  expect(noHeader.headers.get('www-authenticate')).toContain('error="invalid_token"');
   expect(noHeader.headers.get('www-authenticate')).toContain('resource_metadata=');
 
   const badToken = await fetch(`${base}/mcp`, {
@@ -336,8 +354,7 @@ test('bearer middleware pins its 401 bodies and WWW-Authenticate headers', async
     body: '{}',
   });
   expect(badToken.status).toBe(401);
-  expect(await badToken.json()).toEqual({ error: 'invalid_token' });
-  expect(badToken.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  expect(((await badToken.json()) as { error?: string }).error).toBe('invalid_token');
 });
 
 // --- Construction-time behavior ----------------------------------------------
@@ -345,7 +362,7 @@ test('bearer middleware pins its 401 bodies and WWW-Authenticate headers', async
 test('createAuth refuses to construct when /authorize would be unguarded', () => {
   expect(() =>
     createAuth({
-      baseUrl: 'http://localhost:0',
+      baseUrl: 'http://localhost:3000',
       clientId: 'test-client',
       displayName: 'x',
       tokenStorePath: storePath(),
@@ -356,19 +373,25 @@ test('createAuth refuses to construct when /authorize would be unguarded', () =>
 
 test('seedTestToken throws unless testMode is set, and seeds a token accepted on /mcp', async () => {
   const guarded: AuthConfig = {
-    baseUrl: 'http://localhost:0',
+    baseUrl: 'http://localhost:3000',
     clientId: 'test-client',
     displayName: 'x',
     tokenStorePath: storePath(),
     approvalOpen: true,
+    disableRateLimit: true,
   };
   expect(() => createAuth(guarded).seedTestToken()).toThrow(/testMode/);
 
-  let base = 'http://localhost:0';
-  const auth = createAuth({ ...guarded, baseUrl: () => base, testMode: true });
+  const port = await freePort();
+  const base = `http://localhost:${port}`;
+  const auth = createAuth({ ...guarded, baseUrl: base, testMode: true });
   const app = createApp({ name: 'x', version: '0', auth, testMode: true, registerTools: () => {} });
-  const { base: resolved } = await listen(app);
-  base = resolved;
+  await new Promise<void>((resolve) => {
+    const server = app.listen(port, '127.0.0.1', () => {
+      open.push(server);
+      resolve();
+    });
+  });
   const token = auth.seedTestToken();
   const res = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } });
   expect(res.status).toBe(405);
@@ -382,6 +405,7 @@ test('a custom redirect-URI allowlist replaces the default set', async () => {
 
   const rejected = await fetch(
     `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    { redirect: 'manual' },
   );
   expect(rejected.status).toBe(400);
 

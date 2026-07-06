@@ -36,6 +36,7 @@ export function authConfigFromEnv(port: number): AuthConfig {
     approvalOpen,
     approvalPrompt: 'Allow this client to call the fixture MCP tools?',
     testMode: process.env.FIXTURE_AUTH_TEST_MODE === '1',
+    disableRateLimit: true, // the fixture is an example/test target; keep it unthrottled
   };
 }
 

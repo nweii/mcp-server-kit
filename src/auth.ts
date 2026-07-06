@@ -1,18 +1,25 @@
-// Claude-facing OAuth 2.1 authorization server for a remote MCP server: discovery documents, the
-// authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware
-// that guards /mcp. The module carries its own OAuth implementation (rather than delegating to an
-// SDK router) so the exact HTTP surface — endpoint paths, error bodies, headers, and TTLs — stays
-// under the consumer's control. A factory call yields a self-contained instance with no module-level
-// singleton state: its token store, code store, and configuration are all per-instance.
-import type { NextFunction, Request, RequestHandler, Response, Router } from 'express';
-import express from 'express';
-import { createHash, randomUUID, timingSafeEqual } from 'crypto';
+// Claude-facing OAuth 2.1 for a remote MCP server, built on the MCP SDK's auth server: the SDK's
+// mcpAuthRouter and requireBearerAuth wrap a custom OAuthServerProvider that carries the three
+// behaviors the kit owns — a password-gated approval page interposed at /authorize, a static-bearer
+// fallback on /mcp, and a file-persisted opaque token store. Each createAuth call is self-contained:
+// its token store, code store, and configuration are per-instance, with no module-level singleton
+// state. Leaning on the SDK means the OAuth wire surface (discovery, endpoint paths, error shapes)
+// is whatever the SDK emits; the kit adds only the interposed behaviors.
+import type { RequestHandler, Response } from 'express';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
+import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
+import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-// Verified OAuth callback URIs for common MCP clients, used when a consumer does not supply its own
+// Verified OAuth callback URIs for common MCP clients, used when a caller does not supply its own
 // allowlist. Passing `allowedRedirectUris` replaces this list wholesale.
 export const DEFAULT_ALLOWED_REDIRECT_URIS = [
   'https://claude.ai/api/mcp/auth_callback', // Claude.ai / Anthropic
@@ -22,10 +29,9 @@ export const DEFAULT_ALLOWED_REDIRECT_URIS = [
 ];
 
 export interface AuthConfig {
-  // Public base URL of this server, used in discovery documents and the WWW-Authenticate
-  // resource_metadata hint. A string is resolved once; pass a getter to resolve live per request
-  // (e.g. when the listening port is only known after the server binds).
-  baseUrl: string | (() => string);
+  // Public base URL of this server. Used as the SDK's issuer/base URL, so it is baked into the
+  // discovery documents at construction (the SDK does not resolve it live per request).
+  baseUrl: string;
   // The single OAuth client_id this server accepts.
   clientId: string;
   // Shown in the approval page title and heading ("Authorize <displayName>").
@@ -33,9 +39,8 @@ export interface AuthConfig {
   // File the issued tokens persist to, so they survive a restart. Read at construction (unless
   // testMode) and rewritten on every issuance and on saveTokens().
   tokenStorePath: string;
-  // Optional client secret. When set, token exchange requires the same value via client_secret_post,
-  // the discovery document drops the "none" auth method, and the approval guard is satisfied (a
-  // stranger who reaches /authorize still cannot exchange the code without the secret).
+  // Optional client secret. When set, the SDK's token endpoint enforces it (a code alone cannot be
+  // exchanged). See the README on the discovery-metadata mismatch this creates.
   clientSecret?: string;
   // Allowed OAuth redirect URIs. Defaults to DEFAULT_ALLOWED_REDIRECT_URIS.
   allowedRedirectUris?: string[];
@@ -45,21 +50,22 @@ export interface AuthConfig {
   // Enables the password gate: the approval page grows a password field and issues a code only when
   // the correct password is posted. Satisfies the approval guard.
   approvalPassword?: string;
-  // Explicitly declares /authorize acceptably guarded by an external gateway (reverse proxy or
-  // zero-trust layer). Satisfies the approval guard without a password or client secret.
+  // Explicitly declares /authorize acceptably guarded by an external gateway. Satisfies the guard
+  // without a password or client secret.
   approvalOpen?: boolean;
   // Body text on the approval page ("Allow this client to …?"). Defaults to a generic prompt.
   approvalPrompt?: string;
   // When true, skips loading the persisted token store at construction and enables seedTestToken.
-  // Leave false in production so tokens load at boot.
   testMode?: boolean;
+  // When true, disables the SDK's per-endpoint rate limiting (useful under test load).
+  disableRateLimit?: boolean;
 }
 
-// The instance returned by createAuth. `routes` carries discovery + /authorize + /oauth/token;
-// `authMiddleware` is the bearer gate for /mcp; `saveTokens` is for shutdown persistence.
+// The instance returned by createAuth. `routes` is the SDK auth router (discovery + /authorize +
+// /token); `authMiddleware` is the SDK bearer gate for /mcp; `saveTokens` is for shutdown persistence.
 export interface Auth {
   authMiddleware: RequestHandler;
-  routes: Router;
+  routes: RequestHandler;
   saveTokens(): void;
   // Inserts a valid opaque token and returns it. Throws unless testMode is set.
   seedTestToken(): string;
@@ -67,10 +73,8 @@ export interface Auth {
 
 interface PendingCode {
   codeChallenge: string;
-  codeChallengeMethod: string;
   clientId: string;
   redirectUri: string;
-  state?: string;
   expiresAt: number;
 }
 
@@ -79,7 +83,7 @@ interface PendingCode {
 // (and multiple servers in one process) never share state through import side effects.
 class TokenStore {
   private tokens = new Map<string, number>(); // token → expiry (ms epoch)
-  private authCodes = new Map<string, PendingCode>(); // code → pending auth
+  private codes = new Map<string, PendingCode>(); // code → pending auth
 
   constructor(
     private readonly storePath: string,
@@ -114,20 +118,23 @@ class TokenStore {
   private prune(): void {
     const now = Date.now();
     for (const [k, v] of this.tokens) if (now > v) this.tokens.delete(k);
-    for (const [k, v] of this.authCodes) if (now > v.expiresAt) this.authCodes.delete(k);
+    for (const [k, v] of this.codes) if (now > v.expiresAt) this.codes.delete(k);
   }
 
-  addCode(code: string, pending: PendingCode): void {
-    this.authCodes.set(code, pending);
+  putCode(code: string, pending: PendingCode): void {
+    this.codes.set(code, pending);
+  }
+
+  peekCode(code: string): PendingCode | undefined {
+    this.prune();
+    return this.codes.get(code);
   }
 
   takeCode(code: string): PendingCode | undefined {
     this.prune();
-    return this.authCodes.get(code);
-  }
-
-  deleteCode(code: string): void {
-    this.authCodes.delete(code);
+    const p = this.codes.get(code);
+    if (p) this.codes.delete(code);
+    return p;
   }
 
   issueToken(): string {
@@ -146,14 +153,13 @@ class TokenStore {
     return token;
   }
 
-  isValid(token: string): boolean {
+  // Returns the token's expiry (ms epoch) if valid, else undefined.
+  expiryOf(token: string): number | undefined {
     this.prune();
     const expiry = this.tokens.get(token);
-    return expiry !== undefined && Date.now() <= expiry;
+    return expiry !== undefined && Date.now() <= expiry ? expiry : undefined;
   }
 }
-
-// --- Small crypto/HTML helpers ------------------------------------------------
 
 // Constant-time string comparison. A length mismatch returns early (so length can be inferred from
 // timing), but equal-length inputs are compared without a content-dependent timing signal.
@@ -164,11 +170,6 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-function verifyPKCE(codeVerifier: string, codeChallenge: string): boolean {
-  const computed = createHash('sha256').update(codeVerifier).digest('base64url');
-  return computed === codeChallenge;
-}
-
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -177,26 +178,7 @@ function escapeHtml(str: string): string {
     .replace(/>/g, '&gt;');
 }
 
-// The OAuth request params, re-emitted as hidden form inputs so POST /authorize carries everything
-// GET validated. Absent optional params are dropped.
-function buildAuthParamInputs(src: Record<string, string>): string {
-  const params: [string, string | undefined][] = [
-    ['response_type', src.response_type],
-    ['client_id', src.client_id],
-    ['redirect_uri', src.redirect_uri],
-    ['code_challenge', src.code_challenge],
-    ['code_challenge_method', src.code_challenge_method],
-    ['state', src.state],
-    ['scope', src.scope],
-  ];
-  return params
-    .filter((entry): entry is [string, string] => entry[1] !== undefined)
-    .map(([name, val]) => `<input type="hidden" name="${name}" value="${escapeHtml(val)}">`)
-    .join('\n    ');
-}
-
 export function createAuth(config: AuthConfig): Auth {
-  const resolveBaseUrl = typeof config.baseUrl === 'function' ? config.baseUrl : () => config.baseUrl as string;
   const allowedRedirectUris = config.allowedRedirectUris ?? DEFAULT_ALLOWED_REDIRECT_URIS;
   const clientSecret = config.clientSecret?.trim() || undefined;
   const staticBearer = config.staticBearerToken?.trim() || undefined;
@@ -222,13 +204,8 @@ export function createAuth(config: AuthConfig): Auth {
     return constantTimeEqual(password, approvalPassword ?? '');
   }
 
-  function wwwAuthenticate(extra = ''): string {
-    const meta = `resource_metadata="${resolveBaseUrl()}/.well-known/oauth-protected-resource"`;
-    return extra ? `Bearer ${meta}, ${extra}` : `Bearer ${meta}`;
-  }
-
-  function renderApprovalPage(inputsHtml: string, opts: { error?: string } = {}): string {
-    const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
+  function renderApprovalPage(inputsHtml: string, error?: string): string {
+    const errorHtml = error ? `<p style="color:#b00">${escapeHtml(error)}</p>` : '';
     const credentialFields = passwordGate
       ? `<div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
       : '';
@@ -260,169 +237,130 @@ export function createAuth(config: AuthConfig): Auth {
 </html>`;
   }
 
-  // --- Route handlers ---------------------------------------------------------
+  // The provider carries the kit's three behaviors; the SDK router drives everything around it.
+  const provider: OAuthServerProvider = {
+    get clientsStore(): OAuthRegisteredClientsStore {
+      return {
+        getClient: (clientId: string): OAuthClientInformationFull | undefined => {
+          if (clientId !== config.clientId) return undefined;
+          return {
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uris: allowedRedirectUris,
+            token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
+            grant_types: ['authorization_code'],
+            response_types: ['code'],
+          } as OAuthClientInformationFull;
+        },
+      };
+    },
 
-  // GET /.well-known/oauth-protected-resource  (RFC9728)
-  function protectedResourceHandler(_req: Request, res: Response): void {
-    const base = resolveBaseUrl();
-    res.json({ resource: base, authorization_servers: [base] });
-  }
+    // Reached after the SDK validates client_id/redirect_uri (phase 1) and
+    // response_type/code_challenge/S256 (phase 2). We interpose the approval page on GET and the
+    // password-gated form on POST via res.req.
+    async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+      const req = res.req;
+      const body = (req.body ?? {}) as Record<string, string>;
 
-  // GET /.well-known/oauth-authorization-server  (RFC8414)
-  function discoveryHandler(_req: Request, res: Response): void {
-    const base = resolveBaseUrl();
-    res.json({
-      issuer: base,
-      authorization_endpoint: `${base}/authorize`,
-      token_endpoint: `${base}/oauth/token`,
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
-      code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: clientSecret ? ['client_secret_post'] : ['client_secret_post', 'none'],
-    });
-  }
+      const hidden = [
+        ['response_type', 'code'],
+        ['client_id', client.client_id],
+        ['redirect_uri', params.redirectUri],
+        ['code_challenge', params.codeChallenge],
+        ['code_challenge_method', 'S256'],
+        ['state', params.state],
+      ]
+        .filter((e): e is [string, string] => e[1] !== undefined)
+        .map(([n, v]) => `<input type="hidden" name="${n}" value="${escapeHtml(v)}">`)
+        .join('\n    ');
 
-  // GET /authorize — validate params, render the approval page.
-  function authorizationHandler(req: Request, res: Response): void {
-    const q = req.query as Record<string, string>;
-    const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method } = q;
-
-    if (response_type !== 'code') {
-      res.status(400).send('Unsupported response_type');
-      return;
-    }
-    if (client_id !== config.clientId) {
-      res.status(400).send('Unknown client_id');
-      return;
-    }
-    if (!allowedRedirectUris.includes(redirect_uri)) {
-      res.status(400).send('redirect_uri not allowed');
-      return;
-    }
-    if (!code_challenge || code_challenge_method !== 'S256') {
-      res.status(400).send('PKCE with S256 is required');
-      return;
-    }
-
-    res.type('html').send(renderApprovalPage(buildAuthParamInputs(q)));
-  }
-
-  // POST /authorize — user approved; generate a code and redirect back to the client.
-  function authorizationApproveHandler(req: Request, res: Response): void {
-    const b = req.body as Record<string, string>;
-    const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state } = b;
-
-    if (response_type !== 'code' || client_id !== config.clientId) {
-      res.status(400).send('Invalid request');
-      return;
-    }
-    if (!allowedRedirectUris.includes(redirect_uri)) {
-      res.status(400).send('redirect_uri not allowed');
-      return;
-    }
-
-    if (passwordGate) {
-      const password = (b.password ?? '').toString();
-      if (!passwordValid(password)) {
-        res
-          .status(401)
-          .type('html')
-          .send(renderApprovalPage(buildAuthParamInputs(b), { error: 'Incorrect password.' }));
+      if (req.method === 'GET') {
+        res.type('html').send(renderApprovalPage(hidden));
         return;
       }
-    }
 
-    const code = randomUUID();
-    store.addCode(code, {
-      codeChallenge: code_challenge,
-      codeChallengeMethod: code_challenge_method,
-      clientId: client_id,
-      redirectUri: redirect_uri,
-      state,
-      expiresAt: Date.now() + CODE_TTL_MS,
-    });
-
-    const url = new URL(redirect_uri);
-    url.searchParams.set('code', code);
-    if (state) url.searchParams.set('state', state);
-    res.redirect(url.toString());
-  }
-
-  // POST /oauth/token — exchange an authorization code + code_verifier for an access token.
-  function tokenHandler(req: Request, res: Response): void {
-    const { grant_type, code, code_verifier, client_id, client_secret, redirect_uri } = req.body as Record<
-      string,
-      string
-    >;
-
-    if (grant_type !== 'authorization_code') {
-      res.status(400).json({ error: 'unsupported_grant_type' });
-      return;
-    }
-    if (!code) {
-      res.status(400).json({ error: 'invalid_request', error_description: 'code is required' });
-      return;
-    }
-
-    const pending = store.takeCode(code);
-    if (!pending) {
-      res.status(400).json({ error: 'invalid_grant', error_description: 'Unknown or expired code' });
-      return;
-    }
-    if (client_id !== pending.clientId || redirect_uri !== pending.redirectUri) {
-      res.status(400).json({ error: 'invalid_grant' });
-      return;
-    }
-    if (clientSecret) {
-      if (client_secret !== clientSecret) {
-        res.status(401).json({ error: 'invalid_client' });
+      // POST — the approval form was submitted.
+      if (passwordGate && !passwordValid((body.password ?? '').toString())) {
+        res.status(401).type('html').send(renderApprovalPage(hidden, 'Incorrect password.'));
         return;
       }
-    } else if (client_secret !== undefined) {
-      res.status(401).json({ error: 'invalid_client' });
-      return;
-    }
-    if (!verifyPKCE(code_verifier ?? '', pending.codeChallenge)) {
-      res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
-      return;
-    }
 
-    store.deleteCode(code); // single-use
-    const token = store.issueToken();
-    res.json({ access_token: token, token_type: 'bearer', expires_in: TOKEN_TTL_MS / 1000 });
-  }
+      const code = randomUUID();
+      store.putCode(code, {
+        codeChallenge: params.codeChallenge,
+        clientId: client.client_id,
+        redirectUri: params.redirectUri,
+        expiresAt: Date.now() + CODE_TTL_MS,
+      });
+      const url = new URL(params.redirectUri);
+      url.searchParams.set('code', code);
+      if (params.state) url.searchParams.set('state', params.state);
+      res.redirect(url.toString());
+    },
 
-  // --- Bearer middleware ------------------------------------------------------
+    async challengeForAuthorizationCode(
+      _client: OAuthClientInformationFull,
+      authorizationCode: string,
+    ): Promise<string> {
+      const pending = store.peekCode(authorizationCode);
+      if (!pending) throw new InvalidGrantError('Unknown or expired authorization code');
+      return pending.codeChallenge;
+    },
 
-  function bearerMatchesStatic(token: string): boolean {
-    if (!staticBearer) return false;
-    return constantTimeEqual(token, staticBearer);
-  }
+    async exchangeAuthorizationCode(
+      client: OAuthClientInformationFull,
+      authorizationCode: string,
+      _codeVerifier?: string,
+      redirectUri?: string,
+    ): Promise<OAuthTokens> {
+      const pending = store.takeCode(authorizationCode); // single-use
+      if (!pending) throw new InvalidGrantError('Unknown or expired authorization code');
+      if (client.client_id !== pending.clientId || redirectUri !== pending.redirectUri) {
+        throw new InvalidGrantError('client_id or redirect_uri mismatch');
+      }
+      const token = store.issueToken();
+      return { access_token: token, token_type: 'bearer', expires_in: TOKEN_TTL_MS / 1000 } as OAuthTokens;
+    },
 
-  const authMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      res.setHeader('WWW-Authenticate', wwwAuthenticate());
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
+    // Refresh tokens are intentionally not issued or accepted: tokens live 30 days and clients
+    // re-authorize. The SDK's discovery still advertises the refresh_token grant (it is not
+    // configurable), so this reachable path rejects cleanly rather than 500-ing. See the README.
+    async exchangeRefreshToken(): Promise<OAuthTokens> {
+      throw new InvalidGrantError('refresh tokens are not supported');
+    },
 
-    const token = authHeader.slice(7);
-    if (!bearerMatchesStatic(token) && !store.isValid(token)) {
-      res.setHeader('WWW-Authenticate', wwwAuthenticate('error="invalid_token"'));
-      res.status(401).json({ error: 'invalid_token' });
-      return;
-    }
-
-    next();
+    async verifyAccessToken(token: string): Promise<AuthInfo> {
+      if (staticBearer && constantTimeEqual(token, staticBearer)) {
+        return {
+          token,
+          clientId: config.clientId,
+          scopes: [],
+          expiresAt: Math.floor((Date.now() + TOKEN_TTL_MS) / 1000),
+        };
+      }
+      const expiry = store.expiryOf(token);
+      if (expiry !== undefined) {
+        return { token, clientId: config.clientId, scopes: [], expiresAt: Math.floor(expiry / 1000) };
+      }
+      // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
+      throw new InvalidTokenError('invalid or expired access token');
+    },
   };
 
-  const routes = express.Router();
-  routes.get('/.well-known/oauth-protected-resource', protectedResourceHandler);
-  routes.get('/.well-known/oauth-authorization-server', discoveryHandler);
-  routes.get('/authorize', authorizationHandler);
-  routes.post('/authorize', authorizationApproveHandler);
-  routes.post('/oauth/token', tokenHandler);
+  const issuer = new URL(config.baseUrl);
+  const rate = config.disableRateLimit ? { rateLimit: false as const } : undefined;
+  const routes = mcpAuthRouter({
+    provider,
+    issuerUrl: issuer,
+    baseUrl: issuer,
+    resourceName: config.displayName,
+    ...(rate ? { authorizationOptions: rate, tokenOptions: rate } : {}),
+  });
+
+  const authMiddleware = requireBearerAuth({
+    verifier: provider,
+    resourceMetadataUrl: `${config.baseUrl}/.well-known/oauth-protected-resource`,
+  });
 
   return {
     authMiddleware,

@@ -90,7 +90,7 @@ async function issueToken(base: string): Promise<string> {
     }),
   });
   const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!;
-  const tokRes = await fetch(`${base}/oauth/token`, {
+  const tokRes = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
