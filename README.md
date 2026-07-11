@@ -99,7 +99,13 @@ Tool handlers return one of three shapes so the MCP `CallToolResult` is built on
 
 ## Auth module
 
-`createAuth(config)` returns an OAuth 2.1 authorization server for the Claude-facing side of your MCP server: discovery documents, an authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware that guards `/mcp`. Pass the result to `createApp` as `auth`; the factory mounts its routes and wires its middleware.
+`createAuth(config)` returns a fixed-client OAuth 2.1 authorization server for an MCP server: discovery documents, an authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware that guards `/mcp`. Pass the result to `createApp` as `auth`; the factory mounts its routes and wires its middleware.
+
+### ChatGPT compatibility
+
+This module accepts one configured `clientId`. It does not implement Client ID Metadata Documents or dynamic client registration. It can serve a client whose predefined OAuth client matches that configuration, but it is not a turnkey OAuth layer for hosted ChatGPT connectors. The [Apps SDK authentication guide](https://developers.openai.com/apps-sdk/build/auth) describes the registration modes those connectors expect.
+
+For the local ChatGPT desktop app and Codex, document a `staticBearerToken` setup for your server and use an `Authorization: Bearer …` header in the client. The desktop app's bearer-token environment field expects a variable name, not a token value.
 
 The module wraps the official MCP SDK's authorization server (`mcpAuthRouter` and `requireBearerAuth`) around a small custom provider, so it tracks the SDK's OAuth implementation and spec compliance for the wire surface (discovery documents, endpoint paths, error and `WWW-Authenticate` shapes). The kit's provider supplies only the three behaviors the SDK leaves to the server: a password-gated approval page, a static-bearer fallback, and a file-persisted token store. Each `createAuth` call is self-contained: its token store, code store, and configuration are per-instance, with no module-level singleton state.
 
