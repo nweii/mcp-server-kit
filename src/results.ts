@@ -40,6 +40,28 @@ export function jsonResult(
   };
 }
 
+// Schema-validated structured result — the sanctioned return for a tool that declares an
+// `outputSchema`. Pass the same schema object used as the tool's `outputSchema` (any `{ parse }`,
+// e.g. a Zod object) plus the data; it validates once here (belt) before the SDK re-validates the
+// returned `structuredContent` against `outputSchema` (suspenders), so a mismatch fails loudly at
+// the call boundary rather than drifting silently. The text block defaults to pretty JSON of the
+// *parsed* data (the spec wants text to mirror the structured content for back-compat); pass
+// `toText` only when a tool genuinely reads better as prose — and it receives the parsed data, so
+// the text can never describe a different shape than the schema. Keep schemas additive-only and
+// object-rooted (avoid top-level unions) so a change never breaks a client that learned the shape.
+export function structuredResult<T extends object>(
+  schema: { parse: (data: unknown) => T },
+  data: T,
+  toText?: (parsed: T) => string,
+): ToolResult {
+  const parsed = schema.parse(data);
+  const text = toText ? toText(parsed) : JSON.stringify(parsed, null, 2);
+  return {
+    content: [{ type: 'text' as const, text }],
+    structuredContent: parsed as Record<string, unknown>,
+  };
+}
+
 // An error result (`isError: true`) carrying a text message. Accepts an Error, a string, or
 // anything else (coerced via String). Domain-specific error formatting stays at the call site;
 // this covers the common case.
