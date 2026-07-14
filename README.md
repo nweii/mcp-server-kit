@@ -99,11 +99,11 @@ Tool handlers return one of three shapes so the MCP `CallToolResult` is built on
 
 ## Auth module
 
-`createAuth(config)` returns a fixed-client OAuth 2.1 authorization server for an MCP server: discovery documents, an authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware that guards `/mcp`. Pass the result to `createApp` as `auth`; the factory mounts its routes and wires its middleware.
+`createAuth(config)` returns an OAuth 2.1 authorization server for an MCP server: discovery documents, an authorization-code flow with PKCE, file-persisted opaque token issuance, and the bearer middleware that guards `/mcp`. It accepts one pre-registered client by default. Pass the result to `createApp` as `auth`; the factory mounts its routes and wires its middleware.
 
 ### ChatGPT compatibility
 
-This module accepts one configured `clientId`. It does not implement Client ID Metadata Documents or dynamic client registration. It can serve a client whose predefined OAuth client matches that configuration, but it is not a turnkey OAuth layer for hosted ChatGPT connectors. The [Apps SDK authentication guide](https://developers.openai.com/apps-sdk/build/auth) describes the registration modes those connectors expect.
+This module accepts one configured `clientId`. It does not implement Client ID Metadata Documents. It can serve a client whose predefined OAuth client matches that configuration, but it is not a turnkey OAuth layer for hosted ChatGPT connectors. The [Apps SDK authentication guide](https://developers.openai.com/apps-sdk/build/auth) describes the registration modes those connectors expect.
 
 For the local ChatGPT desktop app and Codex, document a `staticBearerToken` setup for your server and use an `Authorization: Bearer …` header in the client. The desktop app's bearer-token environment field expects a variable name, not a token value.
 
@@ -132,6 +132,30 @@ startServer({ app, port, onShutdown: () => auth.saveTokens() });
 
 The kit takes resolved values, not env-var names — map your own environment at the call site.
 
+### Dynamic client registration
+
+Dynamic Client Registration (DCR) is disabled by default. Enable it only when you need an MCP client to create a public OAuth client at runtime, and provide the redirect URIs that server will accept. DCR requires `approvalPassword`; it cannot rely on a configured static-client secret or `approvalOpen` because registered clients are public.
+
+```ts
+const auth = createAuth({
+  baseUrl: 'https://mcp.example.com',
+  clientId: 'existing-client',
+  displayName: 'my-mcp',
+  tokenStorePath: './tokens.json',
+  approvalPassword: process.env.APPROVAL_PASSWORD,
+  dynamicClientRegistration: {
+    allowedRedirectUris: [
+      'com.example.mcp:/oauth/callback',
+      'http://127.0.0.1/oauth/callback',
+    ],
+  },
+});
+```
+
+When enabled, the SDK publishes `/register` in authorization-server metadata. It accepts only public clients (`token_endpoint_auth_method: 'none'`) using the authorization-code grant and `code` response type. Every registered redirect URI must match the allowlist. A loopback redirect may use any port so native clients can choose an ephemeral port.
+
+Registration creates client metadata only. It never issues an authorization code or access token. A registered client still goes through the same approval page and password gate, and its client metadata and issued-token binding are stored beside the existing `token → expiry` entries in `tokenStorePath`.
+
 ### The approval guard
 
 `/authorize` is always reachable, so `createAuth` refuses to construct unless one of three guards is configured, and throws otherwise. Pick the one that matches your deployment:
@@ -159,6 +183,7 @@ Two spots where the SDK's authorization-server metadata is fixed and the kit com
 | `tokenStorePath` | `string` | File the issued tokens persist to; read at construction (unless `testMode`) and rewritten on each issuance and `saveTokens()`. |
 | `clientSecret` | `string?` | Enables the client-secret guard (see above). |
 | `allowedRedirectUris` | `string[]?` | Redirect-URI allowlist; defaults to `DEFAULT_ALLOWED_REDIRECT_URIS` (Claude, ChatGPT connectors, Cursor, Poke). |
+| `dynamicClientRegistration` | `{ allowedRedirectUris: string[] }?` | Enables public-client DCR at `/register`; requires `approvalPassword`. Every registered redirect URI must match this separate allowlist; loopback ports may vary. |
 | `staticBearerToken` | `string?` | A fixed bearer accepted on `/mcp` in addition to issued tokens, for clients that send a static `Authorization` header. |
 | `approvalPassword` | `string?` | Enables the password gate. |
 | `approvalOpen` | `boolean?` | Declares `/authorize` externally guarded. |

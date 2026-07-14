@@ -60,6 +60,16 @@ async function standup(overrides: Partial<AuthConfig> = {}): Promise<string> {
   return base;
 }
 
+async function standupAt(port: number, config: AuthConfig): Promise<{ base: string; server: Server }> {
+  const auth = createAuth(config);
+  const app = createApp({ name: 'kit-auth-fixture', version: '0.0.0', auth, testMode: true, registerTools: () => {} });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(port, '127.0.0.1', () => resolve(listening));
+  });
+  open.push(server);
+  return { base: `http://localhost:${port}`, server };
+}
+
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
@@ -100,6 +110,47 @@ async function exchange(base: string, code: string, verifier: string, extra: Rec
   });
 }
 
+type RegisteredClient = { client_id: string; redirect_uris: string[]; token_endpoint_auth_method?: string };
+
+async function registerPublicClient(base: string, redirectUri = 'com.example.mcp:/oauth/callback') {
+  const res = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      client_name: 'Native MCP client',
+    }),
+  });
+  return { res, body: (await res.json()) as RegisteredClient & { error?: string } };
+}
+
+async function approveRegistered(
+  base: string,
+  clientId: string,
+  redirectUri: string,
+  challenge: string,
+  extra: Record<string, string> = {},
+) {
+  const res = await fetch(`${base}/authorize`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      ...extra,
+    }),
+  });
+  const location = res.headers.get('location') ?? undefined;
+  return { status: res.status, code: location ? new URL(location).searchParams.get('code') ?? undefined : undefined };
+}
+
 // --- Discovery (SDK-emitted) -------------------------------------------------
 
 test('authorization-server metadata is the SDK-emitted document', async () => {
@@ -122,6 +173,119 @@ test('protected-resource metadata points at this server', async () => {
   const body = (await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json()) as Record<string, unknown>;
   expect(body.resource).toBe(`${base}/`);
   expect(body.authorization_servers).toEqual([`${base}/`]);
+});
+
+test('dynamic client registration is disabled by default', async () => {
+  const base = await standup();
+  const metadata = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(metadata.registration_endpoint).toBeUndefined();
+
+  const registration = await fetch(`${base}/register`, { method: 'POST' });
+  expect(registration.status).toBe(404);
+});
+
+test('a registered public client completes the password-gated PKCE flow', async () => {
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } });
+  const metadata = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(metadata.registration_endpoint).toBe(`${base}/register`);
+
+  const registration = await registerPublicClient(base, redirectUri);
+  expect(registration.res.status).toBe(201);
+  expect(registration.body.client_id).toBeTruthy();
+  expect(registration.body.client_secret).toBeUndefined();
+  expect(registration.body.token_endpoint_auth_method).toBe('none');
+
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  expect(approval.status).toBe(302);
+  expect(approval.code).toBeTruthy();
+
+  const token = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: approval.code!,
+      code_verifier: verifier,
+      client_id: registration.body.client_id,
+      redirect_uri: redirectUri,
+    }),
+  });
+  expect(token.status).toBe(200);
+  const { access_token } = (await token.json()) as { access_token: string };
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+});
+
+test('dynamic registration rejects confidential clients and redirects outside its allowlist', async () => {
+  const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: ['com.example.mcp:/oauth/callback'] } });
+
+  const confidential = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redirect_uris: ['com.example.mcp:/oauth/callback'], token_endpoint_auth_method: 'client_secret_post' }),
+  });
+  expect(confidential.status).toBe(400);
+  expect(((await confidential.json()) as { error?: string }).error).toBe('invalid_client_metadata');
+
+  const redirect = await registerPublicClient(base, 'https://evil.example/callback');
+  expect(redirect.res.status).toBe(400);
+  expect(redirect.body.error).toBe('invalid_client_metadata');
+});
+
+test('dynamic registration requires the password gate, even when the static client has a secret', () => {
+  expect(() =>
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      clientSecret: 'static-client-secret',
+      dynamicClientRegistration: { allowedRedirectUris: ['com.example.mcp:/oauth/callback'] },
+    }),
+  ).toThrow(/requires approvalPassword/);
+});
+
+test('registered clients and their tokens survive a restart without replacing legacy token entries', async () => {
+  const path = storePath();
+  const legacyToken = 'legacy-token';
+  const legacyExpiry = Date.now() + 60_000;
+  await Bun.write(path, JSON.stringify({ [legacyToken]: legacyExpiry }));
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const config = (baseUrl: string): AuthConfig => ({
+    baseUrl,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+
+  const firstPort = await freePort();
+  const first = await standupAt(firstPort, config(`http://localhost:${firstPort}`));
+  const registration = await registerPublicClient(first.base, redirectUri);
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(first.base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  const issued = await fetch(`${first.base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', code: approval.code!, code_verifier: verifier,
+      client_id: registration.body.client_id, redirect_uri: redirectUri,
+    }),
+  });
+  const { access_token } = (await issued.json()) as { access_token: string };
+  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  open.splice(open.indexOf(first.server), 1);
+
+  const secondPort = await freePort();
+  const second = await standupAt(secondPort, config(`http://localhost:${secondPort}`));
+  expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+  expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+
+  const postRestart = await approveRegistered(second.base, registration.body.client_id, redirectUri, pkce().challenge, { password: 'sekret' });
+  expect(postRestart.status).toBe(302);
 });
 
 // --- GET /authorize validation (SDK phases) ----------------------------------

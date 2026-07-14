@@ -10,7 +10,7 @@ import { randomUUID, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidClientMetadataError, InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
@@ -44,6 +44,9 @@ export interface AuthConfig {
   clientSecret?: string;
   // Allowed OAuth redirect URIs. Defaults to DEFAULT_ALLOWED_REDIRECT_URIS.
   allowedRedirectUris?: string[];
+  // Opt-in Dynamic Client Registration. Registered public clients must use one of these redirect
+  // URIs (loopback URI ports may vary for native apps). Omit to keep /register unavailable.
+  dynamicClientRegistration?: DynamicClientRegistrationConfig;
   // Optional long-lived bearer accepted on /mcp in addition to issued tokens, for clients that send
   // a fixed Authorization header. Not part of the OAuth flow.
   staticBearerToken?: string;
@@ -59,6 +62,11 @@ export interface AuthConfig {
   testMode?: boolean;
   // When true, disables the SDK's per-endpoint rate limiting (useful under test load).
   disableRateLimit?: boolean;
+}
+
+export interface DynamicClientRegistrationConfig {
+  // Exact redirect URIs accepted at registration, except a loopback URI may use any port.
+  allowedRedirectUris: string[];
 }
 
 // The instance returned by createAuth. `routes` is the SDK auth router (discovery + /authorize +
@@ -78,26 +86,50 @@ interface PendingCode {
   expiresAt: number;
 }
 
+interface TokenRecord {
+  expiry: number;
+  clientId?: string;
+}
+
+interface PersistedAuthMetadata {
+  clients?: Record<string, OAuthClientInformationFull>;
+  tokenClientIds?: Record<string, string>;
+}
+
+const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
 // Per-instance token and authorization-code store. Tokens persist to disk; codes are in-memory only.
 // Instantiated once per createAuth call — there is deliberately no module-level singleton, so tests
 // (and multiple servers in one process) never share state through import side effects.
 class TokenStore {
-  private tokens = new Map<string, number>(); // token → expiry (ms epoch)
+  private tokens = new Map<string, TokenRecord>(); // token → expiry and issuing client
   private codes = new Map<string, PendingCode>(); // code → pending auth
+  private clients = new Map<string, OAuthClientInformationFull>();
 
   constructor(
     private readonly storePath: string,
     load: boolean,
+    private readonly loadDynamicClients: boolean,
   ) {
     if (load) this.load();
   }
 
   private load(): void {
     try {
-      const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, number>;
+      const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, unknown>;
+      const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
+      const tokenClientIds = metadata?.tokenClientIds ?? {};
       const now = Date.now();
       for (const [token, expiry] of Object.entries(data)) {
-        if (expiry > now) this.tokens.set(token, expiry);
+        if (typeof expiry === 'number' && expiry > now) {
+          this.tokens.set(token, { expiry, clientId: tokenClientIds[token] });
+        }
+      }
+      if (this.loadDynamicClients && metadata?.clients) {
+        for (const [clientId, client] of Object.entries(metadata.clients)) {
+          if (isPersistedPublicClient(clientId, client)) this.clients.set(clientId, client);
+        }
       }
       console.log(`[auth] loaded ${this.tokens.size} token(s) from ${this.storePath}`);
     } catch {
@@ -107,8 +139,18 @@ class TokenStore {
 
   save(): void {
     try {
-      const data: Record<string, number> = {};
-      for (const [token, expiry] of this.tokens) data[token] = expiry;
+      const data: Record<string, unknown> = {};
+      const tokenClientIds: Record<string, string> = {};
+      for (const [token, { expiry, clientId }] of this.tokens) {
+        data[token] = expiry;
+        if (clientId) tokenClientIds[token] = clientId;
+      }
+      if (this.clients.size || Object.keys(tokenClientIds).length) {
+        data[PERSISTED_METADATA_KEY] = {
+          ...(this.clients.size ? { clients: Object.fromEntries(this.clients) } : {}),
+          ...(Object.keys(tokenClientIds).length ? { tokenClientIds } : {}),
+        } satisfies PersistedAuthMetadata;
+      }
       writeFileSync(this.storePath, JSON.stringify(data));
     } catch (err) {
       console.error('[auth] failed to save token store:', err);
@@ -117,7 +159,7 @@ class TokenStore {
 
   private prune(): void {
     const now = Date.now();
-    for (const [k, v] of this.tokens) if (now > v) this.tokens.delete(k);
+    for (const [k, v] of this.tokens) if (now > v.expiry) this.tokens.delete(k);
     for (const [k, v] of this.codes) if (now > v.expiresAt) this.codes.delete(k);
   }
 
@@ -137,10 +179,10 @@ class TokenStore {
     return p;
   }
 
-  issueToken(): string {
+  issueToken(clientId: string, staticClientId: string): string {
     this.prune();
     const token = randomUUID();
-    this.tokens.set(token, Date.now() + TOKEN_TTL_MS);
+    this.tokens.set(token, { expiry: Date.now() + TOKEN_TTL_MS, ...(clientId === staticClientId ? {} : { clientId }) });
     this.save();
     return token;
   }
@@ -149,15 +191,47 @@ class TokenStore {
   seed(): string {
     this.prune();
     const token = randomUUID();
-    this.tokens.set(token, Date.now() + TOKEN_TTL_MS);
+    this.tokens.set(token, { expiry: Date.now() + TOKEN_TTL_MS });
     return token;
   }
 
-  // Returns the token's expiry (ms epoch) if valid, else undefined.
-  expiryOf(token: string): number | undefined {
+  // Returns the token's record if valid, else undefined.
+  tokenRecord(token: string): TokenRecord | undefined {
     this.prune();
-    const expiry = this.tokens.get(token);
-    return expiry !== undefined && Date.now() <= expiry ? expiry : undefined;
+    const record = this.tokens.get(token);
+    return record !== undefined && Date.now() <= record.expiry ? record : undefined;
+  }
+
+  getClient(clientId: string): OAuthClientInformationFull | undefined {
+    return this.clients.get(clientId);
+  }
+
+  registerClient(client: OAuthClientInformationFull): OAuthClientInformationFull {
+    this.clients.set(client.client_id, client);
+    this.save();
+    return client;
+  }
+}
+
+function isPersistedPublicClient(clientId: string, client: unknown): client is OAuthClientInformationFull {
+  if (!client || typeof client !== 'object') return false;
+  const record = client as Partial<OAuthClientInformationFull>;
+  return record.client_id === clientId && Array.isArray(record.redirect_uris) && record.redirect_uris.every((uri) => typeof uri === 'string');
+}
+
+function isLoopbackRedirectMatch(requested: string, allowed: string): boolean {
+  try {
+    const requestUrl = new URL(requested);
+    const allowedUrl = new URL(allowed);
+    return (
+      LOOPBACK_HOSTS.has(requestUrl.hostname) &&
+      requestUrl.protocol === allowedUrl.protocol &&
+      requestUrl.hostname === allowedUrl.hostname &&
+      requestUrl.pathname === allowedUrl.pathname &&
+      requestUrl.search === allowedUrl.search
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -180,6 +254,8 @@ function escapeHtml(str: string): string {
 
 export function createAuth(config: AuthConfig): Auth {
   const allowedRedirectUris = config.allowedRedirectUris ?? DEFAULT_ALLOWED_REDIRECT_URIS;
+  const dynamicRegistration = config.dynamicClientRegistration;
+  const dynamicRedirectUris = dynamicRegistration?.allowedRedirectUris;
   const clientSecret = config.clientSecret?.trim() || undefined;
   const staticBearer = config.staticBearerToken?.trim() || undefined;
   const approvalPassword = config.approvalPassword || undefined;
@@ -198,7 +274,55 @@ export function createAuth(config: AuthConfig): Auth {
     );
   }
 
-  const store = new TokenStore(config.tokenStorePath, !testMode);
+  if (dynamicRegistration && (!dynamicRedirectUris?.length || dynamicRedirectUris.some((uri) => !URL.canParse(uri)))) {
+    throw new Error('dynamicClientRegistration.allowedRedirectUris must contain at least one valid URL');
+  }
+  if (dynamicRegistration && !approvalPassword) {
+    throw new Error('dynamicClientRegistration requires approvalPassword so public clients cannot bypass a client-secret-only approval guard');
+  }
+
+  const store = new TokenStore(config.tokenStorePath, !testMode, dynamicRegistration !== undefined);
+  const staticClient: OAuthClientInformationFull = {
+    client_id: config.clientId,
+    client_secret: clientSecret,
+    redirect_uris: allowedRedirectUris,
+    token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
+    grant_types: ['authorization_code'],
+    response_types: ['code'],
+  } as OAuthClientInformationFull;
+
+  function unsafeDynamicClientReason(client: OAuthClientInformationFull): string | undefined {
+    if (!client.client_id) return 'Dynamic registration requires a generated client_id';
+    if (client.client_secret || client.token_endpoint_auth_method !== 'none') {
+      return 'Dynamic registration only accepts public clients using token_endpoint_auth_method "none"';
+    }
+    if (!client.redirect_uris.length || !client.redirect_uris.every((uri) => dynamicRedirectUris!.some((allowed) => uri === allowed || isLoopbackRedirectMatch(uri, allowed)))) {
+      return 'Every redirect_uri must be allowed by dynamicClientRegistration.allowedRedirectUris';
+    }
+    if (client.grant_types && (client.grant_types.length !== 1 || client.grant_types[0] !== 'authorization_code')) {
+      return 'Dynamic registration only accepts the authorization_code grant';
+    }
+    if (client.response_types && (client.response_types.length !== 1 || client.response_types[0] !== 'code')) {
+      return 'Dynamic registration only accepts the code response type';
+    }
+    return undefined;
+  }
+
+  const clientsStore: OAuthRegisteredClientsStore = {
+    getClient: (clientId: string): OAuthClientInformationFull | undefined => {
+      if (clientId === staticClient.client_id) return staticClient;
+      const client = store.getClient(clientId);
+      return client && !unsafeDynamicClientReason(client) ? client : undefined;
+    },
+  };
+  if (dynamicRegistration) {
+    clientsStore.registerClient = (metadata) => {
+      const client = metadata as OAuthClientInformationFull;
+      const reason = unsafeDynamicClientReason(client);
+      if (reason) throw new InvalidClientMetadataError(reason);
+      return store.registerClient(client);
+    };
+  }
 
   function passwordValid(password: string): boolean {
     return constantTimeEqual(password, approvalPassword ?? '');
@@ -240,19 +364,7 @@ export function createAuth(config: AuthConfig): Auth {
   // The provider carries the kit's three behaviors; the SDK router drives everything around it.
   const provider: OAuthServerProvider = {
     get clientsStore(): OAuthRegisteredClientsStore {
-      return {
-        getClient: (clientId: string): OAuthClientInformationFull | undefined => {
-          if (clientId !== config.clientId) return undefined;
-          return {
-            client_id: clientId,
-            client_secret: clientSecret,
-            redirect_uris: allowedRedirectUris,
-            token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
-            grant_types: ['authorization_code'],
-            response_types: ['code'],
-          } as OAuthClientInformationFull;
-        },
-      };
+      return clientsStore;
     },
 
     // Reached after the SDK validates client_id/redirect_uri (phase 1) and
@@ -318,7 +430,7 @@ export function createAuth(config: AuthConfig): Auth {
       if (client.client_id !== pending.clientId || redirectUri !== pending.redirectUri) {
         throw new InvalidGrantError('client_id or redirect_uri mismatch');
       }
-      const token = store.issueToken();
+      const token = store.issueToken(client.client_id, staticClient.client_id);
       return { access_token: token, token_type: 'bearer', expires_in: TOKEN_TTL_MS / 1000 } as OAuthTokens;
     },
 
@@ -338,9 +450,9 @@ export function createAuth(config: AuthConfig): Auth {
           expiresAt: Math.floor((Date.now() + TOKEN_TTL_MS) / 1000),
         };
       }
-      const expiry = store.expiryOf(token);
-      if (expiry !== undefined) {
-        return { token, clientId: config.clientId, scopes: [], expiresAt: Math.floor(expiry / 1000) };
+      const record = store.tokenRecord(token);
+      if (record !== undefined) {
+        return { token, clientId: record.clientId ?? staticClient.client_id, scopes: [], expiresAt: Math.floor(record.expiry / 1000) };
       }
       // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
       throw new InvalidTokenError('invalid or expired access token');
