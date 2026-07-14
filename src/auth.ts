@@ -75,6 +75,14 @@ export interface Auth {
   authMiddleware: RequestHandler;
   routes: RequestHandler;
   saveTokens(): void;
+  // Returns registered public DCR clients. This remains available while DCR is disabled so an
+  // administrator can inspect or permanently revoke credentials that are temporarily rejected.
+  listDynamicClients(): OAuthClientInformationFull[];
+  // Permanently removes one DCR registration and all access tokens issued to it. `removed` is
+  // false when clientId does not name a dynamically registered client.
+  revokeDynamicClient(clientId: string): { removed: boolean; revokedTokenCount: number };
+  // Permanently removes every DCR registration and all access tokens issued to them.
+  clearDynamicClients(): { removedClientCount: number; revokedTokenCount: number };
   // Inserts a valid opaque token and returns it. Throws unless testMode is set.
   seedTestToken(): string;
 }
@@ -110,7 +118,6 @@ class TokenStore {
   constructor(
     private readonly storePath: string,
     load: boolean,
-    private readonly loadDynamicClients: boolean,
   ) {
     if (load) this.load();
   }
@@ -126,7 +133,7 @@ class TokenStore {
           this.tokens.set(token, { expiry, clientId: tokenClientIds[token] });
         }
       }
-      if (this.loadDynamicClients && metadata?.clients) {
+      if (metadata?.clients) {
         for (const [clientId, client] of Object.entries(metadata.clients)) {
           if (isPersistedPublicClient(clientId, client)) this.clients.set(clientId, client);
         }
@@ -211,6 +218,38 @@ class TokenStore {
     this.save();
     return client;
   }
+
+  listClients(): OAuthClientInformationFull[] {
+    return [...this.clients.values()].map((client) => structuredClone(client));
+  }
+
+  revokeClient(clientId: string): { removed: boolean; revokedTokenCount: number } {
+    if (!this.clients.delete(clientId)) return { removed: false, revokedTokenCount: 0 };
+    let revokedTokenCount = 0;
+    for (const [token, record] of this.tokens) {
+      if (record.clientId === clientId) {
+        this.tokens.delete(token);
+        revokedTokenCount++;
+      }
+    }
+    this.save();
+    return { removed: true, revokedTokenCount };
+  }
+
+  clearClients(): { removedClientCount: number; revokedTokenCount: number } {
+    const clientIds = new Set(this.clients.keys());
+    if (!clientIds.size) return { removedClientCount: 0, revokedTokenCount: 0 };
+    let revokedTokenCount = 0;
+    for (const [token, record] of this.tokens) {
+      if (record.clientId && clientIds.has(record.clientId)) {
+        this.tokens.delete(token);
+        revokedTokenCount++;
+      }
+    }
+    this.clients.clear();
+    this.save();
+    return { removedClientCount: clientIds.size, revokedTokenCount };
+  }
 }
 
 function isPersistedPublicClient(clientId: string, client: unknown): client is OAuthClientInformationFull {
@@ -282,7 +321,10 @@ export function createAuth(config: AuthConfig): Auth {
     throw new Error('dynamicClientRegistration requires approvalPassword so public clients cannot bypass a client-secret-only approval guard');
   }
 
-  const store = new TokenStore(config.tokenStorePath, !testMode, dynamicRegistration !== undefined);
+  // Always retain persisted DCR registrations, even while DCR is disabled. The provider still
+  // rejects them in that mode, but loading them prevents a routine save from erasing registrations
+  // and lets a server owner revoke them deliberately through the Auth API.
+  const store = new TokenStore(config.tokenStorePath, !testMode);
   const staticClient: OAuthClientInformationFull = {
     client_id: config.clientId,
     client_secret: clientSecret,
@@ -486,6 +528,9 @@ export function createAuth(config: AuthConfig): Auth {
     authMiddleware,
     routes,
     saveTokens: () => store.save(),
+    listDynamicClients: () => store.listClients(),
+    revokeDynamicClient: (clientId) => store.revokeClient(clientId),
+    clearDynamicClients: () => store.clearClients(),
     seedTestToken: () => {
       if (!testMode) throw new Error('seedTestToken is only available when testMode is set');
       return store.seed();

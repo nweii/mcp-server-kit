@@ -156,6 +156,22 @@ When enabled, the SDK publishes `/register` in authorization-server metadata. It
 
 Registration creates client metadata only. It never issues an authorization code or access token. A registered client still goes through the same approval page and password gate, and its client metadata and issued-token binding are stored beside the existing `token → expiry` entries in `tokenStorePath`.
 
+### Managing registered clients
+
+`createAuth` returns management methods for use behind your own administration surface. The kit does not expose an HTTP administration route. `listDynamicClients()` returns the registered public clients. `revokeDynamicClient(clientId)` permanently removes one registration and every access token issued to it. `clearDynamicClients()` permanently removes every DCR registration and their bound tokens. The revocation results include the number of registrations and tokens removed.
+
+```ts
+const clients = auth.listDynamicClients();
+
+const result = auth.revokeDynamicClient(clients[0].client_id);
+// { removed: true, revokedTokenCount: 3 }
+
+const cleared = auth.clearDynamicClients();
+// { removedClientCount: 4, revokedTokenCount: 12 }
+```
+
+Disabling `dynamicClientRegistration` rejects DCR registrations and their existing credentials while the setting is off. It does not delete the stored registrations, and these management methods remain available so an administrator can inspect or permanently revoke them. Re-enable DCR to accept those still-registered clients again. Use revocation when access must stay removed.
+
 ### The approval guard
 
 `/authorize` is always reachable, so `createAuth` refuses to construct unless one of three guards is configured, and throws otherwise. Pick the one that matches your deployment:
@@ -191,7 +207,7 @@ Two spots where the SDK's authorization-server metadata is fixed and the kit com
 | `testMode` | `boolean?` | Skips the disk load at construction and enables `seedTestToken()`. |
 | `disableRateLimit` | `boolean?` | Turns off the SDK's per-endpoint rate limiting (on by default). |
 
-The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, and `seedTestToken()` (test-mode only).
+The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, `listDynamicClients()`, `revokeDynamicClient()`, `clearDynamicClients()`, and `seedTestToken()` (test-mode only).
 
 ## Audit logging
 
