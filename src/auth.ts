@@ -292,6 +292,7 @@ export function createAuth(config: AuthConfig): Auth {
   } as OAuthClientInformationFull;
 
   function unsafeDynamicClientReason(client: OAuthClientInformationFull): string | undefined {
+    if (!dynamicRegistration) return 'Dynamic registration is disabled';
     if (!client.client_id) return 'Dynamic registration requires a generated client_id';
     if (client.client_secret || client.token_endpoint_auth_method !== 'none') {
       return 'Dynamic registration only accepts public clients using token_endpoint_auth_method "none"';
@@ -452,6 +453,12 @@ export function createAuth(config: AuthConfig): Auth {
       }
       const record = store.tokenRecord(token);
       if (record !== undefined) {
+        if (record.clientId) {
+          const dynamicClient = store.getClient(record.clientId);
+          if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
+            throw new InvalidTokenError('invalid or expired access token');
+          }
+        }
         return { token, clientId: record.clientId ?? staticClient.client_id, scopes: [], expiresAt: Math.floor(record.expiry / 1000) };
       }
       // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
@@ -466,7 +473,7 @@ export function createAuth(config: AuthConfig): Auth {
     issuerUrl: issuer,
     baseUrl: issuer,
     resourceName: config.displayName,
-    ...(rate ? { authorizationOptions: rate, tokenOptions: rate } : {}),
+    ...(rate ? { authorizationOptions: rate, tokenOptions: rate, clientRegistrationOptions: rate } : {}),
   });
 
   const authMiddleware = requireBearerAuth({

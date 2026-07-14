@@ -233,6 +233,19 @@ test('dynamic registration rejects confidential clients and redirects outside it
   expect(redirect.body.error).toBe('invalid_client_metadata');
 });
 
+test('disableRateLimit also controls dynamic registration', async () => {
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const limited = await standup({
+    disableRateLimit: false,
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+  });
+  for (let i = 0; i < 20; i++) expect((await registerPublicClient(limited, redirectUri)).res.status).toBe(201);
+  expect((await registerPublicClient(limited, redirectUri)).res.status).toBe(429);
+
+  const unlimited = await standup({ dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } });
+  for (let i = 0; i < 21; i++) expect((await registerPublicClient(unlimited, redirectUri)).res.status).toBe(201);
+});
+
 test('dynamic registration requires the password gate, even when the static client has a secret', () => {
   expect(() =>
     createAuth({
@@ -252,13 +265,13 @@ test('registered clients and their tokens survive a restart without replacing le
   const legacyExpiry = Date.now() + 60_000;
   await Bun.write(path, JSON.stringify({ [legacyToken]: legacyExpiry }));
   const redirectUri = 'com.example.mcp:/oauth/callback';
-  const config = (baseUrl: string): AuthConfig => ({
+  const config = (baseUrl: string, dynamicClientRegistration = true): AuthConfig => ({
     baseUrl,
     clientId: 'test-client',
     displayName: 'kit-auth-fixture',
     tokenStorePath: path,
     approvalPassword: 'sekret',
-    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    ...(dynamicClientRegistration ? { dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } } : {}),
     disableRateLimit: true,
   });
 
@@ -286,6 +299,13 @@ test('registered clients and their tokens survive a restart without replacing le
 
   const postRestart = await approveRegistered(second.base, registration.body.client_id, redirectUri, pkce().challenge, { password: 'sekret' });
   expect(postRestart.status).toBe(302);
+
+  await new Promise<void>((resolve) => second.server.close(() => resolve()));
+  open.splice(open.indexOf(second.server), 1);
+  const thirdPort = await freePort();
+  const withoutDcr = await standupAt(thirdPort, config(`http://localhost:${thirdPort}`, false));
+  expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+  expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(401);
 });
 
 // --- GET /authorize validation (SDK phases) ----------------------------------
