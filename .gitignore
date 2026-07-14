@@ -32,3 +32,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Synology NAS metadata (DSM indexer). Note: this only keeps @eaDir out of the working tree;
+# DSM can still write @eaDir into .git/refs — remove that artifact by hand if fetch breaks.
+@eaDir/
