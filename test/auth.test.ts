@@ -4,7 +4,7 @@
 // and the startup refusal when /authorize would be unguarded. Assertions pin the SDK-shaped surface
 // (token endpoint at /token, spec-shaped redirect/JSON authorize errors, SDK 401 bodies) at the
 // feature level, exercising each behavior end to end over HTTP.
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import type { Server } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { chmodSync, mkdirSync, readFileSync } from 'fs';
@@ -383,6 +383,40 @@ test('open dynamic registration still requires the approval password', () => {
       dynamicClientRegistration: {},
     }),
   ).toThrow(/requires approvalPassword/);
+});
+
+test('warns loudly when approvalOpen is the only guard (no approvalPassword)', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      approvalOpen: true,
+    });
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(' ')).toContain('approvalOpen=true');
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('does not warn when an approvalPassword gates /authorize, even with approvalOpen set', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      approvalPassword: 'sekret',
+      approvalOpen: true,
+    });
+    expect(warn).not.toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test('a malformed allowlist entry is rejected at construction', () => {

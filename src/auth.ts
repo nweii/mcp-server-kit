@@ -406,6 +406,20 @@ export function createAuth(config: AuthConfig): Auth {
     );
   }
 
+  // Loud warning when the app itself is not gating /authorize. approvalOpen delegates the gate to an
+  // external proxy this process cannot see or verify; if that proxy is missing, misconfigured, or
+  // scoped to the wrong path, anyone who reaches /authorize can approve a client and gain access. The
+  // boot guard above is satisfied, so this can only warn — but it makes the reliance impossible to
+  // forget. (DCR cannot reach this state: it requires approvalPassword.)
+  if (config.approvalOpen === true && !approvalPassword) {
+    console.warn(
+      '[mcp-server-kit] SECURITY: approvalOpen=true with no approvalPassword — this server does NOT ' +
+        'guard /authorize itself. Confirm an external gateway (e.g. Cloudflare Access) actually fronts ' +
+        '/authorize; otherwise anyone who reaches it can approve a client and gain access. Set an ' +
+        'approvalPassword to gate it in the app instead.',
+    );
+  }
+
   // An operator allowlist is optional — open registration is the default. If one is provided, every
   // entry must be a valid URL (a "https://host/*" host-scoped pattern parses too); a malformed
   // allowlist is a config error, not a silent no-op that would quietly reject every real client.
