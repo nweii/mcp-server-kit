@@ -7,6 +7,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import type { Server } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { chmodSync, mkdirSync, readFileSync } from 'fs';
 import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -22,6 +23,12 @@ afterEach(() => {
 
 function storePath(): string {
   return join(tmpdir(), `kit-auth-${randomUUID()}.json`);
+}
+
+function storeDirectory(): { directory: string; path: string } {
+  const directory = join(tmpdir(), `kit-auth-${randomUUID()}`);
+  mkdirSync(directory, { mode: 0o700 });
+  return { directory, path: join(directory, 'tokens.json') };
 }
 
 function freePort(): Promise<number> {
@@ -58,6 +65,16 @@ async function standup(overrides: Partial<AuthConfig> = {}): Promise<string> {
     });
   });
   return base;
+}
+
+async function standupAt(port: number, config: AuthConfig): Promise<{ base: string; server: Server; auth: ReturnType<typeof createAuth> }> {
+  const auth = createAuth(config);
+  const app = createApp({ name: 'kit-auth-fixture', version: '0.0.0', auth, testMode: true, registerTools: () => {} });
+  const server = await new Promise<Server>((resolve) => {
+    const listening = app.listen(port, '127.0.0.1', () => resolve(listening));
+  });
+  open.push(server);
+  return { base: `http://localhost:${port}`, server, auth };
 }
 
 function pkce() {
@@ -100,6 +117,66 @@ async function exchange(base: string, code: string, verifier: string, extra: Rec
   });
 }
 
+type RegisteredClient = { client_id: string; client_secret?: string; redirect_uris: string[]; token_endpoint_auth_method?: string };
+
+async function registerPublicClient(base: string, redirectUri = 'com.example.mcp:/oauth/callback') {
+  const res = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      client_name: 'Native MCP client',
+    }),
+  });
+  return { res, body: (await res.json()) as RegisteredClient & { error?: string } };
+}
+
+async function approveRegistered(
+  base: string,
+  clientId: string,
+  redirectUri: string,
+  challenge: string,
+  extra: Record<string, string> = {},
+) {
+  const res = await fetch(`${base}/authorize`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      ...extra,
+    }),
+  });
+  const location = res.headers.get('location') ?? undefined;
+  return { status: res.status, code: location ? new URL(location).searchParams.get('code') ?? undefined : undefined };
+}
+
+async function issueRegisteredToken(base: string, clientId: string, redirectUri: string): Promise<string> {
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(base, clientId, redirectUri, challenge, { password: 'sekret' });
+  expect(approval.code).toBeTruthy();
+  const token = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: approval.code!,
+      code_verifier: verifier,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+    }),
+  });
+  expect(token.status).toBe(200);
+  return ((await token.json()) as { access_token: string }).access_token;
+}
+
 // --- Discovery (SDK-emitted) -------------------------------------------------
 
 test('authorization-server metadata is the SDK-emitted document', async () => {
@@ -122,6 +199,326 @@ test('protected-resource metadata points at this server', async () => {
   const body = (await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json()) as Record<string, unknown>;
   expect(body.resource).toBe(`${base}/`);
   expect(body.authorization_servers).toEqual([`${base}/`]);
+});
+
+test('dynamic client registration is disabled by default', async () => {
+  const base = await standup();
+  const metadata = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(metadata.registration_endpoint).toBeUndefined();
+
+  const registration = await fetch(`${base}/register`, { method: 'POST' });
+  expect(registration.status).toBe(404);
+});
+
+test('a registered public client completes the password-gated PKCE flow', async () => {
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } });
+  const metadata = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(metadata.registration_endpoint).toBe(`${base}/register`);
+
+  const registration = await registerPublicClient(base, redirectUri);
+  expect(registration.res.status).toBe(201);
+  expect(registration.body.client_id).toBeTruthy();
+  expect(registration.body.client_secret).toBeUndefined();
+  expect(registration.body.token_endpoint_auth_method).toBe('none');
+
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  expect(approval.status).toBe(302);
+  expect(approval.code).toBeTruthy();
+
+  const token = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: approval.code!,
+      code_verifier: verifier,
+      client_id: registration.body.client_id,
+      redirect_uri: redirectUri,
+    }),
+  });
+  expect(token.status).toBe(200);
+  const { access_token } = (await token.json()) as { access_token: string };
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+});
+
+test('dynamic registration rejects confidential clients and redirects outside its allowlist', async () => {
+  const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: ['com.example.mcp:/oauth/callback'] } });
+
+  const confidential = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redirect_uris: ['com.example.mcp:/oauth/callback'], token_endpoint_auth_method: 'client_secret_post' }),
+  });
+  expect(confidential.status).toBe(400);
+  expect(((await confidential.json()) as { error?: string }).error).toBe('invalid_client_metadata');
+
+  const redirect = await registerPublicClient(base, 'https://evil.example/callback');
+  expect(redirect.res.status).toBe(400);
+  expect(redirect.body.error).toBe('invalid_client_metadata');
+
+  const externalAllowlist = await standup({
+    dynamicClientRegistration: { allowedRedirectUris: ['https://trusted.example/oauth/callback'] },
+  });
+  const loopbackBypass = await registerPublicClient(externalAllowlist, 'https://localhost/oauth/callback');
+  expect(loopbackBypass.res.status).toBe(400);
+  expect(loopbackBypass.body.error).toBe('invalid_client_metadata');
+});
+
+test('dynamic registration permits a different port for an allowlisted loopback redirect', async () => {
+  const base = await standup({
+    dynamicClientRegistration: { allowedRedirectUris: ['http://127.0.0.1/oauth/callback'] },
+  });
+  expect((await registerPublicClient(base, 'http://127.0.0.1:43123/oauth/callback')).res.status).toBe(201);
+});
+
+test('disableRateLimit also controls dynamic registration', async () => {
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const limited = await standup({
+    disableRateLimit: false,
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+  });
+  for (let i = 0; i < 20; i++) expect((await registerPublicClient(limited, redirectUri)).res.status).toBe(201);
+  expect((await registerPublicClient(limited, redirectUri)).res.status).toBe(429);
+
+  const unlimited = await standup({ dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } });
+  for (let i = 0; i < 21; i++) expect((await registerPublicClient(unlimited, redirectUri)).res.status).toBe(201);
+});
+
+test('dynamic registration requires the password gate, even when the static client has a secret', () => {
+  expect(() =>
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      clientSecret: 'static-client-secret',
+      dynamicClientRegistration: { allowedRedirectUris: ['com.example.mcp:/oauth/callback'] },
+    }),
+  ).toThrow(/requires approvalPassword/);
+});
+
+test('registered clients and their tokens survive a restart without replacing legacy token entries', async () => {
+  const path = storePath();
+  const legacyToken = 'legacy-token';
+  const legacyExpiry = Date.now() + 60_000;
+  await Bun.write(path, JSON.stringify({ [legacyToken]: legacyExpiry }));
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const config = (baseUrl: string, dynamicClientRegistration = true): AuthConfig => ({
+    baseUrl,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    ...(dynamicClientRegistration ? { dynamicClientRegistration: { allowedRedirectUris: [redirectUri] } } : {}),
+    disableRateLimit: true,
+  });
+
+  const firstPort = await freePort();
+  const first = await standupAt(firstPort, config(`http://localhost:${firstPort}`));
+  const registration = await registerPublicClient(first.base, redirectUri);
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(first.base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  const issued = await fetch(`${first.base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', code: approval.code!, code_verifier: verifier,
+      client_id: registration.body.client_id, redirect_uri: redirectUri,
+    }),
+  });
+  const { access_token } = (await issued.json()) as { access_token: string };
+  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  open.splice(open.indexOf(first.server), 1);
+
+  const secondPort = await freePort();
+  const second = await standupAt(secondPort, config(`http://localhost:${secondPort}`));
+  expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+  expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+
+  const postRestart = await approveRegistered(second.base, registration.body.client_id, redirectUri, pkce().challenge, { password: 'sekret' });
+  expect(postRestart.status).toBe(302);
+
+  await new Promise<void>((resolve) => second.server.close(() => resolve()));
+  open.splice(open.indexOf(second.server), 1);
+  const thirdPort = await freePort();
+  const withoutDcr = await standupAt(thirdPort, config(`http://localhost:${thirdPort}`, false));
+  expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+  expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(401);
+  expect(withoutDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+  withoutDcr.auth.saveTokens();
+  await new Promise<void>((resolve) => withoutDcr.server.close(() => resolve()));
+  open.splice(open.indexOf(withoutDcr.server), 1);
+
+  const fourthPort = await freePort();
+  const restoredDcr = await standupAt(fourthPort, config(`http://localhost:${fourthPort}`));
+  expect(restoredDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+  expect((await fetch(`${restoredDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+});
+
+test('revokeDynamicClient permanently removes one client and only its tokens', async () => {
+  const path = storePath();
+  const legacyToken = 'legacy-token';
+  await Bun.write(path, JSON.stringify({ [legacyToken]: Date.now() + 60_000 }));
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    staticBearerToken: 'static-abc',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const first = await registerPublicClient(base, redirectUri);
+  const second = await registerPublicClient(base, redirectUri);
+  const firstToken = await issueRegisteredToken(base, first.body.client_id, redirectUri);
+  const secondToken = await issueRegisteredToken(base, second.body.client_id, redirectUri);
+  const { verifier, challenge } = pkce();
+  const approval = await approve(base, challenge, { password: 'sekret' });
+  const staticToken = (await (await exchange(base, approval.code!, verifier)).json() as { access_token: string }).access_token;
+
+  expect(auth.listDynamicClients().map((client) => client.client_id).sort()).toEqual([first.body.client_id, second.body.client_id].sort());
+  expect(auth.revokeDynamicClient(first.body.client_id)).toEqual({ removed: true, revokedTokenCount: 1 });
+  expect(auth.revokeDynamicClient(first.body.client_id)).toEqual({ removed: false, revokedTokenCount: 0 });
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${firstToken}` } })).status).toBe(401);
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${secondToken}` } })).status).toBe(405);
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${staticToken}` } })).status).toBe(405);
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+  expect((await fetch(`${base}/mcp`, { headers: { Authorization: 'Bearer static-abc' } })).status).toBe(405);
+});
+
+test('clearDynamicClients persists permanent removal across a restart', async () => {
+  const path = storePath();
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const config = (baseUrl: string): AuthConfig => ({
+    baseUrl,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const firstPort = await freePort();
+  const first = await standupAt(firstPort, config(`http://localhost:${firstPort}`));
+  const one = await registerPublicClient(first.base, redirectUri);
+  const two = await registerPublicClient(first.base, redirectUri);
+  const oneToken = await issueRegisteredToken(first.base, one.body.client_id, redirectUri);
+  const twoToken = await issueRegisteredToken(first.base, two.body.client_id, redirectUri);
+
+  expect(first.auth.clearDynamicClients()).toEqual({ removedClientCount: 2, revokedTokenCount: 2 });
+  expect(first.auth.listDynamicClients()).toEqual([]);
+  expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${oneToken}` } })).status).toBe(401);
+  expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${twoToken}` } })).status).toBe(401);
+  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  open.splice(open.indexOf(first.server), 1);
+
+  const secondPort = await freePort();
+  const second = await standupAt(secondPort, config(`http://localhost:${secondPort}`));
+  expect(second.auth.listDynamicClients()).toEqual([]);
+  expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${oneToken}` } })).status).toBe(401);
+  expect(second.auth.clearDynamicClients()).toEqual({ removedClientCount: 0, revokedTokenCount: 0 });
+});
+
+test('revokeDynamicClient reports a persistence failure and restores access', async () => {
+  const { directory, path } = storeDirectory();
+  const legacyToken = 'legacy-token';
+  await Bun.write(path, JSON.stringify({ [legacyToken]: Date.now() + 60_000 }));
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    staticBearerToken: 'static-abc',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const registration = await registerPublicClient(base, redirectUri);
+  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+  const persistedBefore = readFileSync(path, 'utf-8');
+
+  chmodSync(directory, 0o500);
+  try {
+    expect(() => auth.revokeDynamicClient(registration.body.client_id)).toThrow(/Failed to persist dynamic client revocation/);
+    expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: 'Bearer static-abc' } })).status).toBe(405);
+    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+});
+
+test('dynamic registration fails without returning a client when the store cannot be replaced', async () => {
+  const { directory, path } = storeDirectory();
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+
+  chmodSync(directory, 0o500);
+  try {
+    const registration = await fetch(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }),
+    });
+    expect(registration.status).not.toBe(201);
+    expect(auth.listDynamicClients()).toEqual([]);
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+});
+
+test('token issuance fails without returning a token when the store cannot be replaced', async () => {
+  const { directory, path } = storeDirectory();
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const registration = await registerPublicClient(base, redirectUri);
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  const persistedBefore = readFileSync(path, 'utf-8');
+
+  chmodSync(directory, 0o500);
+  try {
+    const issuance = await fetch(`${base}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code: approval.code!, code_verifier: verifier,
+        client_id: registration.body.client_id, redirect_uri: redirectUri,
+      }),
+    });
+    expect(issuance.status).not.toBe(200);
+    expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+  } finally {
+    chmodSync(directory, 0o700);
+  }
 });
 
 // --- GET /authorize validation (SDK phases) ----------------------------------
