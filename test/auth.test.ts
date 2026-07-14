@@ -7,6 +7,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import type { Server } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { chmodSync } from 'fs';
 import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -340,6 +341,14 @@ test('registered clients and their tokens survive a restart without replacing le
   expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
   expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(401);
   expect(withoutDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+  withoutDcr.auth.saveTokens();
+  await new Promise<void>((resolve) => withoutDcr.server.close(() => resolve()));
+  open.splice(open.indexOf(withoutDcr.server), 1);
+
+  const fourthPort = await freePort();
+  const restoredDcr = await standupAt(fourthPort, config(`http://localhost:${fourthPort}`));
+  expect(restoredDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+  expect((await fetch(`${restoredDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
 });
 
 test('revokeDynamicClient permanently removes one client and only its tokens', async () => {
@@ -407,6 +416,32 @@ test('clearDynamicClients persists permanent removal across a restart', async ()
   expect(second.auth.listDynamicClients()).toEqual([]);
   expect((await fetch(`${second.base}/mcp`, { headers: { Authorization: `Bearer ${oneToken}` } })).status).toBe(401);
   expect(second.auth.clearDynamicClients()).toEqual({ removedClientCount: 0, revokedTokenCount: 0 });
+});
+
+test('revokeDynamicClient reports a persistence failure and restores access', async () => {
+  const path = storePath();
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const registration = await registerPublicClient(base, redirectUri);
+  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+
+  chmodSync(path, 0o400);
+  try {
+    expect(() => auth.revokeDynamicClient(registration.body.client_id)).toThrow(/Failed to persist dynamic client revocation/);
+    expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
+  } finally {
+    chmodSync(path, 0o600);
+  }
 });
 
 // --- GET /authorize validation (SDK phases) ----------------------------------

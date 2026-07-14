@@ -79,9 +79,11 @@ export interface Auth {
   // administrator can inspect or permanently revoke credentials that are temporarily rejected.
   listDynamicClients(): OAuthClientInformationFull[];
   // Permanently removes one DCR registration and all access tokens issued to it. `removed` is
-  // false when clientId does not name a dynamically registered client.
+  // false when clientId does not name a dynamically registered client. Throws without changing
+  // memory when the deletion cannot be persisted.
   revokeDynamicClient(clientId: string): { removed: boolean; revokedTokenCount: number };
-  // Permanently removes every DCR registration and all access tokens issued to them.
+  // Permanently removes every DCR registration and all access tokens issued to them. Throws
+  // without changing memory when the deletion cannot be persisted.
   clearDynamicClients(): { removedClientCount: number; revokedTokenCount: number };
   // Inserts a valid opaque token and returns it. Throws unless testMode is set.
   seedTestToken(): string;
@@ -144,7 +146,7 @@ class TokenStore {
     }
   }
 
-  save(): void {
+  save(): boolean {
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
@@ -159,8 +161,10 @@ class TokenStore {
         } satisfies PersistedAuthMetadata;
       }
       writeFileSync(this.storePath, JSON.stringify(data));
+      return true;
     } catch (err) {
       console.error('[auth] failed to save token store:', err);
+      return false;
     }
   }
 
@@ -224,7 +228,10 @@ class TokenStore {
   }
 
   revokeClient(clientId: string): { removed: boolean; revokedTokenCount: number } {
-    if (!this.clients.delete(clientId)) return { removed: false, revokedTokenCount: 0 };
+    if (!this.clients.has(clientId)) return { removed: false, revokedTokenCount: 0 };
+    const clients = new Map(this.clients);
+    const tokens = new Map(this.tokens);
+    this.clients.delete(clientId);
     let revokedTokenCount = 0;
     for (const [token, record] of this.tokens) {
       if (record.clientId === clientId) {
@@ -232,13 +239,19 @@ class TokenStore {
         revokedTokenCount++;
       }
     }
-    this.save();
+    if (!this.save()) {
+      this.clients = clients;
+      this.tokens = tokens;
+      throw new Error('Failed to persist dynamic client revocation; no client or token was removed');
+    }
     return { removed: true, revokedTokenCount };
   }
 
   clearClients(): { removedClientCount: number; revokedTokenCount: number } {
     const clientIds = new Set(this.clients.keys());
     if (!clientIds.size) return { removedClientCount: 0, revokedTokenCount: 0 };
+    const clients = new Map(this.clients);
+    const tokens = new Map(this.tokens);
     let revokedTokenCount = 0;
     for (const [token, record] of this.tokens) {
       if (record.clientId && clientIds.has(record.clientId)) {
@@ -247,7 +260,11 @@ class TokenStore {
       }
     }
     this.clients.clear();
-    this.save();
+    if (!this.save()) {
+      this.clients = clients;
+      this.tokens = tokens;
+      throw new Error('Failed to persist dynamic client revocation; no client or token was removed');
+    }
     return { removedClientCount: clientIds.size, revokedTokenCount };
   }
 }

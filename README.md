@@ -158,7 +158,7 @@ Registration creates client metadata only. It never issues an authorization code
 
 ### Managing registered clients
 
-`createAuth` returns management methods for use behind your own administration surface. The kit does not expose an HTTP administration route. `listDynamicClients()` returns the registered public clients. `revokeDynamicClient(clientId)` permanently removes one registration and every access token issued to it. `clearDynamicClients()` permanently removes every DCR registration and their bound tokens. The revocation results include the number of registrations and tokens removed.
+`createAuth` returns management methods for use behind your own administration surface. The kit does not expose an HTTP administration route. `listDynamicClients()` returns the registered public clients. `revokeDynamicClient(clientId)` permanently removes one registration and every access token issued to it. `clearDynamicClients()` permanently removes every DCR registration and their bound tokens. The revocation results include the number of registrations and tokens removed. If the token store cannot be updated, either revocation method throws and leaves the in-memory registration and tokens intact.
 
 ```ts
 const clients = auth.listDynamicClients();
