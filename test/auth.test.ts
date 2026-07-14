@@ -286,6 +286,87 @@ test('disableRateLimit also controls dynamic registration', async () => {
   for (let i = 0; i < 21; i++) expect((await registerPublicClient(unlimited, redirectUri)).res.status).toBe(201);
 });
 
+test('open dynamic registration accepts a client-declared https redirect with no operator allowlist', async () => {
+  const redirectUri = 'https://chatgpt.com/connector/oauth/abc123';
+  const base = await standup({ dynamicClientRegistration: {} });
+  const metadata = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+  expect(metadata.registration_endpoint).toBe(`${base}/register`);
+
+  const registration = await registerPublicClient(base, redirectUri);
+  expect(registration.res.status).toBe(201);
+  expect(registration.body.client_id).toBeTruthy();
+
+  // The approval password still gates the flow end to end — that is the trust boundary, not an allowlist.
+  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+  expect(token).toBeTruthy();
+});
+
+test('open dynamic registration rejects plaintext http on a non-loopback host', async () => {
+  const base = await standup({ dynamicClientRegistration: {} });
+  const insecure = await registerPublicClient(base, 'http://chatgpt.example/callback');
+  expect(insecure.res.status).toBe(400);
+  expect(insecure.body.error).toBe('invalid_client_metadata');
+});
+
+test('open dynamic registration still rejects confidential clients', async () => {
+  const base = await standup({ dynamicClientRegistration: {} });
+  const confidential = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redirect_uris: ['https://chatgpt.com/connector/oauth/x'], token_endpoint_auth_method: 'client_secret_post' }),
+  });
+  expect(confidential.status).toBe(400);
+  expect(((await confidential.json()) as { error?: string }).error).toBe('invalid_client_metadata');
+});
+
+test('a host-scoped allowlist entry accepts any path on that origin and rejects other origins', async () => {
+  const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: ['https://chatgpt.com/*'] } });
+  expect((await registerPublicClient(base, 'https://chatgpt.com/connector/oauth/abc123')).res.status).toBe(201);
+  expect((await registerPublicClient(base, 'https://chatgpt.com/connector/oauth/zzz999')).res.status).toBe(201);
+  const other = await registerPublicClient(base, 'https://evil.example/callback');
+  expect(other.res.status).toBe(400);
+  expect(other.body.error).toBe('invalid_client_metadata');
+});
+
+test('the approval page names the requesting client and its callback host', async () => {
+  const redirectUri = 'https://chatgpt.com/connector/oauth/abc123';
+  const base = await standup({ dynamicClientRegistration: {} });
+  const registration = await registerPublicClient(base, redirectUri);
+  const { challenge } = pkce();
+  const url = `${base}/authorize?response_type=code&client_id=${encodeURIComponent(registration.body.client_id)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256`;
+  const html = await (await fetch(url)).text();
+  expect(html).toContain('Request from');
+  expect(html).toContain('chatgpt.com');
+  expect(html).toContain('Native MCP client'); // client_name declared at registration
+});
+
+test('open dynamic registration still requires the approval password', () => {
+  expect(() =>
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      clientSecret: 'static-client-secret',
+      dynamicClientRegistration: {},
+    }),
+  ).toThrow(/requires approvalPassword/);
+});
+
+test('a malformed allowlist entry is rejected at construction', () => {
+  expect(() =>
+    createAuth({
+      baseUrl: 'http://localhost:3000',
+      clientId: 'test-client',
+      displayName: 'kit-auth-fixture',
+      tokenStorePath: storePath(),
+      approvalPassword: 'sekret',
+      dynamicClientRegistration: { allowedRedirectUris: ['not a url'] },
+    }),
+  ).toThrow(/valid URLs/);
+});
+
 test('dynamic registration requires the password gate, even when the static client has a secret', () => {
   expect(() =>
     createAuth({

@@ -45,8 +45,11 @@ export interface AuthConfig {
   clientSecret?: string;
   // Allowed OAuth redirect URIs. Defaults to DEFAULT_ALLOWED_REDIRECT_URIS.
   allowedRedirectUris?: string[];
-  // Opt-in Dynamic Client Registration. Registered public clients must use one of these redirect
-  // URIs (loopback URI ports may vary for native apps). Omit to keep /register unavailable.
+  // Opt-in dynamic client registration: opens /register so clients that can't be pre-configured (e.g.
+  // ChatGPT) can register themselves, no per-client server config. Trust rests on the approval gate,
+  // PKCE, and the SDK's per-client exact redirect match at /authorize — so this requires
+  // approvalPassword. Pass {} for standard open registration; set allowedRedirectUris only to
+  // additionally restrict which redirects may register. Omit entirely to keep /register unavailable.
   dynamicClientRegistration?: DynamicClientRegistrationConfig;
   // Optional long-lived bearer accepted on /mcp in addition to issued tokens, for clients that send
   // a fixed Authorization header. Not part of the OAuth flow.
@@ -66,8 +69,12 @@ export interface AuthConfig {
 }
 
 export interface DynamicClientRegistrationConfig {
-  // Exact redirect URIs accepted at registration, except a loopback URI may use any port.
-  allowedRedirectUris: string[];
+  // Optional operator hardening. Omit (or leave empty) for standard open registration: each client's
+  // own declared redirect URIs are accepted, then matched exactly at /authorize by the SDK. When set,
+  // registrations are additionally restricted to these entries — each is an exact redirect URI, a
+  // loopback URI (any port may vary), or a host-scoped "https://host/*" pattern accepting any path on
+  // that origin (useful when a provider's callback path is ephemeral, e.g. ChatGPT's connector id).
+  allowedRedirectUris?: string[];
 }
 
 // The instance returned by createAuth. `routes` is the SDK auth router (discovery + /authorize +
@@ -310,6 +317,56 @@ function isLoopbackRedirectMatch(requested: string, allowed: string): boolean {
   }
 }
 
+// Matches a requested redirect against one operator-allowlist entry: exact string, a loopback URI on
+// any port, or a host-scoped "https://host/*" (or "https://host/prefix/*") pattern that accepts any
+// path under that exact origin. The wildcard exists because some providers mint an ephemeral last path
+// segment per connector, so an exact path can't be pinned ahead of time.
+function redirectMatchesAllowed(requested: string, allowed: string): boolean {
+  if (requested === allowed) return true;
+  if (isLoopbackRedirectMatch(requested, allowed)) return true;
+  return isHostScopedMatch(requested, allowed);
+}
+
+function isHostScopedMatch(requested: string, allowed: string): boolean {
+  if (!allowed.endsWith('/*')) return false;
+  try {
+    const allowedUrl = new URL(allowed.slice(0, -1)); // drop the '*', keep the path prefix
+    const requestUrl = new URL(requested);
+    return (
+      requestUrl.protocol === allowedUrl.protocol &&
+      requestUrl.host === allowedUrl.host &&
+      requestUrl.pathname.startsWith(allowedUrl.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+// True only for plaintext http on a non-loopback host — the one redirect shape open registration
+// declines. https, loopback http, and native custom-scheme redirects (e.g. com.example:/cb) are fine.
+function isInsecureHttpRedirect(uri: string): boolean {
+  try {
+    const url = new URL(uri);
+    return url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Human-readable label for the consent page: the client's declared name and/or the host it will send
+// the user back to, so an unexpected approval is visible. Undefined when neither is available.
+function describeRequester(client: OAuthClientInformationFull, redirectUri: string | undefined): string | undefined {
+  let host: string | undefined;
+  try {
+    host = redirectUri ? new URL(redirectUri).host || undefined : undefined;
+  } catch {
+    host = undefined;
+  }
+  const name = (client as { client_name?: string }).client_name?.trim() || undefined;
+  if (name && host) return `${name} (${host})`;
+  return name ?? host;
+}
+
 // Constant-time string comparison. A length mismatch returns early (so length can be inferred from
 // timing), but equal-length inputs are compared without a content-dependent timing signal.
 function constantTimeEqual(a: string, b: string): boolean {
@@ -349,11 +406,18 @@ export function createAuth(config: AuthConfig): Auth {
     );
   }
 
-  if (dynamicRegistration && (!dynamicRedirectUris?.length || dynamicRedirectUris.some((uri) => !URL.canParse(uri)))) {
-    throw new Error('dynamicClientRegistration.allowedRedirectUris must contain at least one valid URL');
+  // An operator allowlist is optional — open registration is the default. If one is provided, every
+  // entry must be a valid URL (a "https://host/*" host-scoped pattern parses too); a malformed
+  // allowlist is a config error, not a silent no-op that would quietly reject every real client.
+  if (dynamicRegistration && dynamicRedirectUris?.some((uri) => !URL.canParse(uri))) {
+    throw new Error('dynamicClientRegistration.allowedRedirectUris entries must all be valid URLs');
   }
+  // DCR still requires the approval password: with open registration, that password is the gate that
+  // stops a self-registered client from gaining access. A client secret can't substitute — public
+  // clients don't present it — and neither can approvalOpen, since it delegates the gate to a proxy
+  // that a self-registering client may not actually pass through.
   if (dynamicRegistration && !approvalPassword) {
-    throw new Error('dynamicClientRegistration requires approvalPassword so public clients cannot bypass a client-secret-only approval guard');
+    throw new Error('dynamicClientRegistration requires approvalPassword: it is the gate that stops a self-registered public client from gaining access');
   }
 
   // Always retain persisted DCR registrations, even while DCR is disabled. The provider still
@@ -375,8 +439,20 @@ export function createAuth(config: AuthConfig): Auth {
     if (client.client_secret || client.token_endpoint_auth_method !== 'none') {
       return 'Dynamic registration only accepts public clients using token_endpoint_auth_method "none"';
     }
-    if (!client.redirect_uris.length || !client.redirect_uris.every((uri) => dynamicRedirectUris!.some((allowed) => uri === allowed || isLoopbackRedirectMatch(uri, allowed)))) {
-      return 'Every redirect_uri must be allowed by dynamicClientRegistration.allowedRedirectUris';
+    if (!client.redirect_uris.length) {
+      return 'Dynamic registration requires at least one redirect_uri';
+    }
+    const hardened = !!dynamicRedirectUris?.length;
+    if (hardened) {
+      if (!client.redirect_uris.every((uri) => dynamicRedirectUris!.some((allowed) => redirectMatchesAllowed(uri, allowed)))) {
+        return 'Every redirect_uri must be allowed by dynamicClientRegistration.allowedRedirectUris';
+      }
+    } else if (client.redirect_uris.some(isInsecureHttpRedirect)) {
+      // Open registration accepts the client's own declared redirects (the SDK still matches them
+      // exactly at /authorize, and the approval password gates the flow), but declines plaintext http
+      // on a non-loopback host: a code delivered over http could be intercepted. Transport hygiene,
+      // not a trust decision — https and native custom-scheme redirects are fine.
+      return 'Dynamic registration requires https redirect URIs (http is allowed only for loopback)';
     }
     if (client.grant_types && (client.grant_types.length !== 1 || client.grant_types[0] !== 'authorization_code')) {
       return 'Dynamic registration only accepts the authorization_code grant';
@@ -407,8 +483,11 @@ export function createAuth(config: AuthConfig): Auth {
     return constantTimeEqual(password, approvalPassword ?? '');
   }
 
-  function renderApprovalPage(inputsHtml: string, error?: string): string {
-    const errorHtml = error ? `<p style="color:#b00">${escapeHtml(error)}</p>` : '';
+  function renderApprovalPage(inputsHtml: string, opts: { error?: string; requester?: string } = {}): string {
+    const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
+    const requesterHtml = opts.requester
+      ? `<p style="color:#111;margin-bottom:1rem">Request from <strong>${escapeHtml(opts.requester)}</strong></p>`
+      : '';
     const credentialFields = passwordGate
       ? `<div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
       : '';
@@ -430,6 +509,7 @@ export function createAuth(config: AuthConfig): Auth {
 <body>
   <h1>Authorize ${name}</h1>
   <p>${escapeHtml(approvalPrompt)}</p>
+  ${requesterHtml}
   ${errorHtml}
   <form method="POST" action="/authorize">
     ${inputsHtml}
@@ -465,14 +545,18 @@ export function createAuth(config: AuthConfig): Auth {
         .map(([n, v]) => `<input type="hidden" name="${n}" value="${escapeHtml(v)}">`)
         .join('\n    ');
 
+      // Shown on the approval page so the operator can see which client and callback host they are
+      // approving — the visible check that matters most once /register is open to public clients.
+      const requester = describeRequester(client, params.redirectUri);
+
       if (req.method === 'GET') {
-        res.type('html').send(renderApprovalPage(hidden));
+        res.type('html').send(renderApprovalPage(hidden, { requester }));
         return;
       }
 
       // POST — the approval form was submitted.
       if (passwordGate && !passwordValid((body.password ?? '').toString())) {
-        res.status(401).type('html').send(renderApprovalPage(hidden, 'Incorrect password.'));
+        res.status(401).type('html').send(renderApprovalPage(hidden, { error: 'Incorrect password.', requester }));
         return;
       }
 

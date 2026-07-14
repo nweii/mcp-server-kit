@@ -147,9 +147,9 @@ The kit takes resolved values, not env-var names. Map your own environment at th
 
 ### Use dynamic client registration when the client chooses its own ID
 
-Dynamic Client Registration (DCR) lets an MCP client create its own public OAuth client at runtime. It is disabled by default. Enable it with the redirect URIs your server will accept.
+Dynamic Client Registration (DCR) lets an MCP client create its own public OAuth client at runtime, so a client you never configured — ChatGPT desktop, Codex — can connect with no per-client server change. It is disabled by default. Enable it by passing `dynamicClientRegistration`; pass `{}` for standard open registration.
 
-DCR requires `approvalPassword`. A registered client is public, so a static client secret cannot protect its authorization flow. `approvalOpen` is not enough either.
+DCR requires `approvalPassword`. With open registration that password is the gate: it is what stops a self-registered public client from gaining access. A static client secret cannot substitute (public clients do not present one), and `approvalOpen` is not enough either (it delegates the gate to a proxy the self-registering client may not pass through).
 
 ```ts
 const auth = createAuth({
@@ -158,16 +158,20 @@ const auth = createAuth({
   displayName: 'my-mcp',
   tokenStorePath: './tokens.json',
   approvalPassword: process.env.APPROVAL_PASSWORD,
-  dynamicClientRegistration: {
-    allowedRedirectUris: [
-      'com.example.mcp:/oauth/callback',
-      'http://127.0.0.1/oauth/callback',
-    ],
-  },
+  dynamicClientRegistration: {}, // open registration; the approval password is the gate
 });
 ```
 
-When enabled, the SDK publishes `/register` in authorization-server metadata. It accepts only public clients (`token_endpoint_auth_method: 'none'`) using the authorization-code grant and `code` response type. Each registered redirect URI must match `dynamicClientRegistration.allowedRedirectUris`. A loopback redirect may use any port so native clients can choose an ephemeral port.
+When enabled, the SDK publishes `/register` in authorization-server metadata. It accepts only public clients (`token_endpoint_auth_method: 'none'`) using the authorization-code grant and `code` response type. By default a client's own declared redirect URIs are accepted (plaintext `http` is refused except on loopback), and the SDK matches them exactly against that client at `/authorize` — the per-client validation OAuth 2.1 requires. This is how DCR is meant to work: the operator does not maintain a list of clients' callback URLs.
+
+Optionally, restrict which redirects may register with `allowedRedirectUris`. Each entry is an exact redirect URI, a loopback URI (any port may vary, for native clients), or a host-scoped `https://host/*` pattern that accepts any path on that origin — useful when a provider's callback path is ephemeral (e.g. ChatGPT mints a per-connector id). Prefer host-scoping over exact paths for such providers; a bare exact URI would need updating whenever the client re-registers.
+
+```ts
+// Optional hardening — only if you want a closed server:
+dynamicClientRegistration: {
+  allowedRedirectUris: ['https://chatgpt.com/*', 'com.example.mcp:/oauth/callback'],
+}
+```
 
 Registration creates client metadata only. It never issues an authorization code or access token. A registered client still goes through the same approval page and password gate, and its client metadata and issued-token binding are stored beside the existing `token → expiry` entries in `tokenStorePath`.
 
@@ -224,7 +228,7 @@ Two SDK metadata details are fixed upstream:
 | `tokenStorePath` | `string` | File the issued tokens persist to; read at construction (unless `testMode`) and rewritten on each issuance and `saveTokens()`. |
 | `clientSecret` | `string?` | Enables the client-secret guard (see above). |
 | `allowedRedirectUris` | `string[]?` | Redirect URIs for the pre-registered client only. Defaults to `DEFAULT_ALLOWED_REDIRECT_URIS`. |
-| `dynamicClientRegistration` | `{ allowedRedirectUris: string[] }?` | Enables public-client DCR at `/register`; requires `approvalPassword`. This is a separate redirect allowlist. Loopback ports may vary. |
+| `dynamicClientRegistration` | `{ allowedRedirectUris?: string[] }?` | Enables public-client DCR at `/register`; requires `approvalPassword`. Pass `{}` for open registration (clients' own declared redirects, matched per-client at `/authorize`). Set `allowedRedirectUris` only to restrict which redirects may register — exact, loopback (any port), or host-scoped `https://host/*`. |
 | `staticBearerToken` | `string?` | A fixed bearer accepted on `/mcp` in addition to issued OAuth tokens. Use only for clients that cannot use OAuth. |
 | `approvalPassword` | `string?` | Enables the password gate. |
 | `approvalOpen` | `boolean?` | Declares `/authorize` externally guarded. |
