@@ -454,10 +454,15 @@ export function createAuth(config: AuthConfig): Auth {
       // not a trust decision — https and native custom-scheme redirects are fine.
       return 'Dynamic registration requires https redirect URIs (http is allowed only for loopback)';
     }
-    if (client.grant_types && (client.grant_types.length !== 1 || client.grant_types[0] !== 'authorization_code')) {
-      return 'Dynamic registration only accepts the authorization_code grant';
+    // Require the authorization-code grant and accept the optional refresh_token grant alongside it
+    // (real clients, e.g. ChatGPT, register both — refresh_token is advertised in discovery). Reject
+    // any other grant type.
+    if (client.grant_types && (!client.grant_types.includes('authorization_code') ||
+        client.grant_types.some((grant) => grant !== 'authorization_code' && grant !== 'refresh_token'))) {
+      return 'Dynamic registration accepts only the authorization_code and refresh_token grants';
     }
-    if (client.response_types && (client.response_types.length !== 1 || client.response_types[0] !== 'code')) {
+    if (client.response_types && (!client.response_types.includes('code') ||
+        client.response_types.some((type) => type !== 'code'))) {
       return 'Dynamic registration only accepts the code response type';
     }
     return undefined;

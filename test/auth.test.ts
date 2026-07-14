@@ -319,6 +319,37 @@ test('open dynamic registration still rejects confidential clients', async () =>
   expect(((await confidential.json()) as { error?: string }).error).toBe('invalid_client_metadata');
 });
 
+test('dynamic registration accepts the authorization_code + refresh_token grants (as ChatGPT sends)', async () => {
+  const base = await standup({ dynamicClientRegistration: {} });
+  const res = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      redirect_uris: ['https://chatgpt.com/connector/oauth/abc123'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+    }),
+  });
+  expect(res.status).toBe(201);
+});
+
+test('dynamic registration rejects a grant type it does not support', async () => {
+  const base = await standup({ dynamicClientRegistration: {} });
+  const res = await fetch(`${base}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      redirect_uris: ['https://chatgpt.com/connector/oauth/abc123'],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'client_credentials'],
+      response_types: ['code'],
+    }),
+  });
+  expect(res.status).toBe(400);
+  expect(((await res.json()) as { error?: string }).error).toBe('invalid_client_metadata');
+});
+
 test('a host-scoped allowlist entry accepts any path on that origin and rejects other origins', async () => {
   const base = await standup({ dynamicClientRegistration: { allowedRedirectUris: ['https://chatgpt.com/*'] } });
   expect((await registerPublicClient(base, 'https://chatgpt.com/connector/oauth/abc123')).res.status).toBe(201);
