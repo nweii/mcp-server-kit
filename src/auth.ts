@@ -7,7 +7,8 @@
 // is whatever the SDK emits; the kit adds only the interposed behaviors.
 import type { RequestHandler, Response } from 'express';
 import { randomUUID, timingSafeEqual } from 'crypto';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { InvalidClientMetadataError, InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -147,6 +148,7 @@ class TokenStore {
   }
 
   save(): boolean {
+    const temporaryPath = join(dirname(this.storePath), `.${basename(this.storePath)}.${randomUUID()}.tmp`);
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
@@ -160,9 +162,15 @@ class TokenStore {
           ...(Object.keys(tokenClientIds).length ? { tokenClientIds } : {}),
         } satisfies PersistedAuthMetadata;
       }
-      writeFileSync(this.storePath, JSON.stringify(data));
+      writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 });
+      renameSync(temporaryPath, this.storePath);
       return true;
     } catch (err) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The temporary file either was never created or cannot be removed after the write error.
+      }
       console.error('[auth] failed to save token store:', err);
       return false;
     }
@@ -193,8 +201,13 @@ class TokenStore {
   issueToken(clientId: string, staticClientId: string): string {
     this.prune();
     const token = randomUUID();
+    const previous = this.tokens.get(token);
     this.tokens.set(token, { expiry: Date.now() + TOKEN_TTL_MS, ...(clientId === staticClientId ? {} : { clientId }) });
-    this.save();
+    if (!this.save()) {
+      if (previous) this.tokens.set(token, previous);
+      else this.tokens.delete(token);
+      throw new Error('Failed to persist access token; token was not issued');
+    }
     return token;
   }
 
@@ -218,8 +231,13 @@ class TokenStore {
   }
 
   registerClient(client: OAuthClientInformationFull): OAuthClientInformationFull {
+    const previous = this.clients.get(client.client_id);
     this.clients.set(client.client_id, client);
-    this.save();
+    if (!this.save()) {
+      if (previous) this.clients.set(client.client_id, previous);
+      else this.clients.delete(client.client_id);
+      throw new Error('Failed to persist dynamic client registration; registration was not created');
+    }
     return client;
   }
 

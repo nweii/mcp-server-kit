@@ -7,7 +7,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import type { Server } from 'http';
 import { createHash, randomBytes, randomUUID } from 'crypto';
-import { chmodSync } from 'fs';
+import { chmodSync, mkdirSync, readFileSync } from 'fs';
 import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -23,6 +23,12 @@ afterEach(() => {
 
 function storePath(): string {
   return join(tmpdir(), `kit-auth-${randomUUID()}.json`);
+}
+
+function storeDirectory(): { directory: string; path: string } {
+  const directory = join(tmpdir(), `kit-auth-${randomUUID()}`);
+  mkdirSync(directory, { mode: 0o700 });
+  return { directory, path: join(directory, 'tokens.json') };
 }
 
 function freePort(): Promise<number> {
@@ -419,7 +425,68 @@ test('clearDynamicClients persists permanent removal across a restart', async ()
 });
 
 test('revokeDynamicClient reports a persistence failure and restores access', async () => {
-  const path = storePath();
+  const { directory, path } = storeDirectory();
+  const legacyToken = 'legacy-token';
+  await Bun.write(path, JSON.stringify({ [legacyToken]: Date.now() + 60_000 }));
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    staticBearerToken: 'static-abc',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+  const registration = await registerPublicClient(base, redirectUri);
+  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+  const persistedBefore = readFileSync(path, 'utf-8');
+
+  chmodSync(directory, 0o500);
+  try {
+    expect(() => auth.revokeDynamicClient(registration.body.client_id)).toThrow(/Failed to persist dynamic client revocation/);
+    expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
+    expect((await fetch(`${base}/mcp`, { headers: { Authorization: 'Bearer static-abc' } })).status).toBe(405);
+    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+});
+
+test('dynamic registration fails without returning a client when the store cannot be replaced', async () => {
+  const { directory, path } = storeDirectory();
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const port = await freePort();
+  const { base, auth } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    clientId: 'test-client',
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: { allowedRedirectUris: [redirectUri] },
+    disableRateLimit: true,
+  });
+
+  chmodSync(directory, 0o500);
+  try {
+    const registration = await fetch(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }),
+    });
+    expect(registration.status).not.toBe(201);
+    expect(auth.listDynamicClients()).toEqual([]);
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+});
+
+test('token issuance fails without returning a token when the store cannot be replaced', async () => {
+  const { directory, path } = storeDirectory();
   const redirectUri = 'com.example.mcp:/oauth/callback';
   const port = await freePort();
   const { base, auth } = await standupAt(port, {
@@ -432,15 +499,25 @@ test('revokeDynamicClient reports a persistence failure and restores access', as
     disableRateLimit: true,
   });
   const registration = await registerPublicClient(base, redirectUri);
-  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+  const { verifier, challenge } = pkce();
+  const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
+  const persistedBefore = readFileSync(path, 'utf-8');
 
-  chmodSync(path, 0o400);
+  chmodSync(directory, 0o500);
   try {
-    expect(() => auth.revokeDynamicClient(registration.body.client_id)).toThrow(/Failed to persist dynamic client revocation/);
+    const issuance = await fetch(`${base}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code: approval.code!, code_verifier: verifier,
+        client_id: registration.body.client_id, redirect_uri: redirectUri,
+      }),
+    });
+    expect(issuance.status).not.toBe(200);
     expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
-    expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
+    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
   } finally {
-    chmodSync(path, 0o600);
+    chmodSync(directory, 0o700);
   }
 });
 
