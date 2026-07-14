@@ -225,6 +225,7 @@ function isLoopbackRedirectMatch(requested: string, allowed: string): boolean {
     const allowedUrl = new URL(allowed);
     return (
       LOOPBACK_HOSTS.has(requestUrl.hostname) &&
+      LOOPBACK_HOSTS.has(allowedUrl.hostname) &&
       requestUrl.protocol === allowedUrl.protocol &&
       requestUrl.hostname === allowedUrl.hostname &&
       requestUrl.pathname === allowedUrl.pathname &&

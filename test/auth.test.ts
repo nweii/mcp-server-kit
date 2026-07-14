@@ -231,6 +231,20 @@ test('dynamic registration rejects confidential clients and redirects outside it
   const redirect = await registerPublicClient(base, 'https://evil.example/callback');
   expect(redirect.res.status).toBe(400);
   expect(redirect.body.error).toBe('invalid_client_metadata');
+
+  const externalAllowlist = await standup({
+    dynamicClientRegistration: { allowedRedirectUris: ['https://trusted.example/oauth/callback'] },
+  });
+  const loopbackBypass = await registerPublicClient(externalAllowlist, 'https://localhost/oauth/callback');
+  expect(loopbackBypass.res.status).toBe(400);
+  expect(loopbackBypass.body.error).toBe('invalid_client_metadata');
+});
+
+test('dynamic registration permits a different port for an allowlisted loopback redirect', async () => {
+  const base = await standup({
+    dynamicClientRegistration: { allowedRedirectUris: ['http://127.0.0.1/oauth/callback'] },
+  });
+  expect((await registerPublicClient(base, 'http://127.0.0.1:43123/oauth/callback')).res.status).toBe(201);
 });
 
 test('disableRateLimit also controls dynamic registration', async () => {
