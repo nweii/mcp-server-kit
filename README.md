@@ -9,17 +9,17 @@ Use `createApp` with your own `authMiddleware` when you already have an authenti
 The kit is distributed as a git dependency. With Bun:
 
 ```bash
-bun add git+https://github.com/nweii/mcp-server-kit.git
+bun add git+https://github.com/nweii/mcp-server-kit.git zod@^4
 ```
 
 If the repository is private and the git install cannot authenticate in your environment, clone it and install from a local path instead:
 
 ```bash
 git clone https://github.com/nweii/mcp-server-kit.git
-bun add ./mcp-server-kit
+bun add ./mcp-server-kit zod@^4
 ```
 
-The package includes Express, the stable split MCP TypeScript SDK v2 server packages, and Zod v4.
+The kit includes Express and the stable split MCP TypeScript SDK v2 server packages. The install commands also add Zod v4 for your tool schemas.
 
 ## Quickstart
 
@@ -70,7 +70,7 @@ bun run fixture/server.ts
 
 `createApp(options)` returns an Express app with:
 
-- **CORS** — allows any origin by default; pass `corsOrigins: ['https://…']` to restrict. A disallowed browser preflight is rejected with 403. CORS does not authenticate remote MCP clients.
+- **CORS** — allows any origin by default; pass `corsOrigins: ['https://…']` to restrict. Disallowed preflights and `/mcp` requests carrying a disallowed Origin are rejected with 403; Origin-less non-browser clients continue normally. CORS does not authenticate remote MCP clients.
 - **Request logging** — one line per request with client IP, method, path, status, and duration. Suppressed when `testMode: true`.
 - **`GET /health`** — returns `404` when no `healthToken` is configured, `401` on a missing or wrong bearer, and `200 { ok, version, uptime_seconds }` on a valid one. Pass an optional `healthProbe` (an async liveness check); if it throws, health responds `503 { ok: false, … }`.
 - **`/mcp`** — `POST` serves MCP `2026-07-28` and legacy 2025-era stateless HTTP through one `createMcpHandler` factory, with a fresh `McpServer` built from your `registerTools` for every request and guarded by your `authMiddleware`. `GET` and `DELETE` return `405` (no standalone SSE, no session to delete in stateless mode).

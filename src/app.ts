@@ -82,6 +82,17 @@ function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | 
   return true;
 }
 
+function makeOriginGuard(allowedOrigins: string[] | null): RequestHandler {
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (allowedOrigins !== null && origin && !allowedOrigins.includes(origin)) {
+      res.status(403).end();
+      return;
+    }
+    next();
+  };
+}
+
 // Constant-time string comparison so the health token can't be recovered by timing.
 function constantTimeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, 'utf-8');
@@ -123,6 +134,7 @@ export function createApp(opts: CreateAppOptions): Express {
 
   const app = express();
   const allowedOrigins = opts.corsOrigins ?? null;
+  const originGuard = makeOriginGuard(allowedOrigins);
 
   app.use((req, res, next) => {
     if (!setCorsHeaders(req, res, allowedOrigins)) return;
@@ -149,8 +161,8 @@ export function createApp(opts: CreateAppOptions): Express {
     res.setHeader('Allow', 'POST');
     res.status(405).end();
   };
-  app.get('/mcp', authMiddleware, methodNotAllowed);
-  app.delete('/mcp', authMiddleware, methodNotAllowed);
+  app.get('/mcp', originGuard, authMiddleware, methodNotAllowed);
+  app.delete('/mcp', originGuard, authMiddleware, methodNotAllowed);
 
   const mcpHandler = createMcpHandler(
     async () => {
@@ -162,7 +174,7 @@ export function createApp(opts: CreateAppOptions): Express {
   );
   const nodeMcpHandler = toNodeHandler(mcpHandler);
 
-  app.post('/mcp', authMiddleware, async (req, res) => {
+  app.post('/mcp', originGuard, authMiddleware, async (req, res) => {
     if (!opts.testMode) {
       const body = req.body as { method?: string; params?: { name?: string } };
       const mcpMethod = body?.method ?? '?';

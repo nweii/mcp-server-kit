@@ -66,6 +66,9 @@ async function modernMcp(
     'MCP-Protocol-Version': MODERN_PROTOCOL_VERSION,
     'Mcp-Method': method,
   };
+  if (method === 'tools/call' && typeof params.name === 'string') {
+    headers['Mcp-Name'] = params.name;
+  }
   if (token) headers.Authorization = `Bearer ${token}`;
   return fetch(`${base}/mcp`, {
     method: 'POST',
@@ -199,6 +202,19 @@ test('modern and legacy tools/list expose the same fixture tools without session
   expect(modernNames).toContain('echo');
 });
 
+test('modern tools/call validates Mcp-Name and preserves structured results', async () => {
+  const base = await listen(createFixtureApp().app);
+  const res = await modernMcp(base, FIXTURE_TOKEN, 'tools/call', {
+    name: 'echo',
+    arguments: { message: 'hi-modern' },
+  });
+  expect(res.status).toBe(200);
+  const body = parseRpc(await res.text());
+  expect(body.result.isError).toBeFalsy();
+  expect(body.result.content[0].text).toContain('"echoed": "hi-modern"');
+  expect(body.result.structuredContent).toEqual({ echoed: 'hi-modern' });
+});
+
 test('jsonResult surfaces both a text block and structuredContent', async () => {
   const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, {
@@ -252,4 +268,73 @@ test('restricted CORS reflects an allowed origin and rejects others', async () =
 
   const bad = await fetch(`${base}/health`, { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } });
   expect(bad.status).toBe(403);
+});
+
+test('restricted CORS rejects a disallowed Origin on POST /mcp', async () => {
+  const app = createApp({
+    name: 'cors-fixture',
+    version: '1.0.0',
+    authMiddleware: passThrough as never,
+    registerTools: () => {},
+    testMode: true,
+    corsOrigins: ['https://ok.example'],
+  });
+  const base = await listen(app);
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Origin: 'https://evil.example',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+
+  expect(res.status).toBe(403);
+});
+
+test('restricted CORS allows an allowed Origin on POST /mcp', async () => {
+  const app = createApp({
+    name: 'cors-fixture',
+    version: '1.0.0',
+    authMiddleware: passThrough as never,
+    registerTools: () => {},
+    testMode: true,
+    corsOrigins: ['https://ok.example'],
+  });
+  const base = await listen(app);
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Origin: 'https://ok.example',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+
+  expect(res.status).toBe(200);
+  expect(res.headers.get('access-control-allow-origin')).toBe('https://ok.example');
+});
+
+test('restricted CORS allows Origin-less POST /mcp requests', async () => {
+  const app = createApp({
+    name: 'cors-fixture',
+    version: '1.0.0',
+    authMiddleware: passThrough as never,
+    registerTools: () => {},
+    testMode: true,
+    corsOrigins: ['https://ok.example'],
+  });
+  const base = await listen(app);
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+  });
+
+  expect(res.status).toBe(200);
 });
