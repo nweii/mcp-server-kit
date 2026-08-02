@@ -19,7 +19,7 @@ git clone https://github.com/nweii/mcp-server-kit.git
 bun add ./mcp-server-kit
 ```
 
-The package includes `express` and `@modelcontextprotocol/sdk`. The quickstart uses `zod`; add it to your application if it is not already installed.
+The package includes Express, the stable split MCP TypeScript SDK v2 server packages, and Zod v4.
 
 ## Quickstart
 
@@ -27,7 +27,7 @@ Assemble a server from the factory, register your tools, and start it. The examp
 
 ```ts
 import type { RequestHandler } from 'express';
-import { z } from 'zod';
+import { z } from 'zod/v4';
 import { createApp, startServer, jsonResult, errorResult } from 'mcp-server-kit';
 
 // Your auth seam. This stub accepts a single static bearer; swap in a real check.
@@ -50,7 +50,7 @@ const app = createApp({
   registerTools(server) {
     server.registerTool(
       'echo',
-      { title: 'Echo', description: 'Returns its input.', inputSchema: { message: z.string() } },
+      { title: 'Echo', description: 'Returns its input.', inputSchema: z.object({ message: z.string() }) },
       async ({ message }) =>
         message === 'boom' ? errorResult(new Error('boom')) : jsonResult({ echoed: message }),
     );
@@ -73,7 +73,7 @@ bun run fixture/server.ts
 - **CORS** — allows any origin by default; pass `corsOrigins: ['https://…']` to restrict. A disallowed browser preflight is rejected with 403. CORS does not authenticate remote MCP clients.
 - **Request logging** — one line per request with client IP, method, path, status, and duration. Suppressed when `testMode: true`.
 - **`GET /health`** — returns `404` when no `healthToken` is configured, `401` on a missing or wrong bearer, and `200 { ok, version, uptime_seconds }` on a valid one. Pass an optional `healthProbe` (an async liveness check); if it throws, health responds `503 { ok: false, … }`.
-- **`/mcp`** — `POST` mounts a stateless `StreamableHTTPServerTransport` around a fresh `McpServer` built from your `registerTools`, guarded by your `authMiddleware`. `GET` and `DELETE` return `405` (no standalone SSE, no session to delete in stateless mode).
+- **`/mcp`** — `POST` serves MCP `2026-07-28` and legacy 2025-era stateless HTTP through one `createMcpHandler` factory, with a fresh `McpServer` built from your `registerTools` for every request and guarded by your `authMiddleware`. `GET` and `DELETE` return `405` (no standalone SSE, no session to delete in stateless mode).
 
 ### Options
 
@@ -281,6 +281,8 @@ The returned `AuditLogger` exposes `registerLogged`, `logToolCall`, `logFeedback
 ```bash
 bun install
 bun test
+bun run typecheck
+bun run audit
 ```
 
 The suite assembles the fixture server and exercises it over HTTP: the health contract, `/mcp` method gating and tool listing, CORS behavior, the result-helper shapes observable through the fixture's `echo` tool, the full auth contract (discovery, the PKCE flow, all three approval-gate configurations, static bearer, and error shapes), token persistence across a spawned-process restart, and the audit-logging module's summarization, record shapes, gates, and `registerLogged` wrapper.

@@ -13,16 +13,21 @@
   ],
   "scripts": {
     "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "audit": "bun audit",
     "fixture": "bun run fixture/server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server-legacy": "^2.0.0",
     "express": "^4.21.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
     "@types/node": "^22.0.0",
     "bun-types": "^1.1.0",
-    "zod": "^3.24.2"
+    "typescript": "^5.9.3",
+    "zod": "^4.2.0"
   }
 }

@@ -8,6 +8,12 @@ import { createApp } from '../src/index.js';
 import { createFixtureApp, FIXTURE_TOKEN } from '../fixture/server.js';
 
 const open: Server[] = [];
+const MODERN_PROTOCOL_VERSION = '2026-07-28';
+const MODERN_ENVELOPE = {
+  'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,
+  'io.modelcontextprotocol/clientInfo': { name: 'kit-http-test', version: '1.0.0' },
+  'io.modelcontextprotocol/clientCapabilities': {},
+};
 
 afterEach(() => {
   for (const s of open.splice(0)) s.close();
@@ -46,6 +52,31 @@ async function mcp(base: string, token: string | null, body: unknown): Promise<R
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   return fetch(`${base}/mcp`, { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+async function modernMcp(
+  base: string,
+  token: string | null,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+    'MCP-Protocol-Version': MODERN_PROTOCOL_VERSION,
+    'Mcp-Method': method,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2026,
+      method,
+      params: { ...params, _meta: MODERN_ENVELOPE },
+    }),
+  });
 }
 
 // Streamable-HTTP responses come back as JSON or SSE-wrapped JSON; parse either.
@@ -137,12 +168,35 @@ test('POST /mcp initialize returns the configured server name', async () => {
   expect(body.result.serverInfo.name).toBe('mcp-server-kit-fixture');
 });
 
+test('modern server/discover advertises 2026-07-28 without issuing a session id', async () => {
+  const base = await listen(createFixtureApp().app);
+  const res = await modernMcp(base, FIXTURE_TOKEN, 'server/discover');
+  expect(res.status).toBe(200);
+  expect(res.headers.get('mcp-session-id')).toBeNull();
+  const body = parseRpc(await res.text());
+  expect(body.result.supportedVersions).toEqual([MODERN_PROTOCOL_VERSION]);
+  expect(body.result._meta['io.modelcontextprotocol/serverInfo'].name).toBe('mcp-server-kit-fixture');
+});
+
 test('tools/list advertises the registered echo tool', async () => {
   const base = await listen(createFixtureApp().app);
   const res = await mcp(base, FIXTURE_TOKEN, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const body = parseRpc(await res.text());
   const names = (body.result.tools as Array<{ name: string }>).map((t) => t.name);
   expect(names).toContain('echo');
+});
+
+test('modern and legacy tools/list expose the same fixture tools without sessions', async () => {
+  const base = await listen(createFixtureApp().app);
+  const legacy = await mcp(base, FIXTURE_TOKEN, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const modern = await modernMcp(base, FIXTURE_TOKEN, 'tools/list');
+  expect(modern.status).toBe(200);
+  expect(modern.headers.get('mcp-session-id')).toBeNull();
+
+  const legacyNames = (parseRpc(await legacy.text()).result.tools as Array<{ name: string }>).map((tool) => tool.name);
+  const modernNames = (parseRpc(await modern.text()).result.tools as Array<{ name: string }>).map((tool) => tool.name);
+  expect(modernNames).toEqual(legacyNames);
+  expect(modernNames).toContain('echo');
 });
 
 test('jsonResult surfaces both a text block and structuredContent', async () => {

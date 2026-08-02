@@ -4,7 +4,7 @@
 // so nothing here is tied to a particular server's tools or environment variables.
 import { mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolResult } from './results.js';
 
 export interface AuditLogConfig {

@@ -240,7 +240,30 @@ test('a registered public client completes the password-gated PKCE flow', async 
   });
   expect(token.status).toBe(200);
   const { access_token } = (await token.json()) as { access_token: string };
-  expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(405);
+  const mcp = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${access_token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2026-07-28',
+      'Mcp-Method': 'server/discover',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2026,
+      method: 'server/discover',
+      params: {
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'dcr-regression-test', version: '1.0.0' },
+          'io.modelcontextprotocol/clientCapabilities': {},
+        },
+      },
+    }),
+  });
+  expect(mcp.status).toBe(200);
+  expect(mcp.headers.get('mcp-session-id')).toBeNull();
 });
 
 test('dynamic registration rejects confidential clients and redirects outside its allowlist', async () => {

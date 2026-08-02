@@ -9,13 +9,20 @@ import type { RequestHandler, Response } from 'express';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
-import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
-import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
-import { InvalidClientMetadataError, InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
-import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import {
+  InvalidClientMetadataError,
+  InvalidGrantError,
+  InvalidTokenError,
+  mcpAuthRouter,
+  requireBearerAuth,
+} from '@modelcontextprotocol/server-legacy/auth';
+import type {
+  AuthInfo,
+  AuthorizationParams,
+  OAuthRegisteredClientsStore,
+  OAuthServerProvider,
+} from '@modelcontextprotocol/server-legacy/auth';
+import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes

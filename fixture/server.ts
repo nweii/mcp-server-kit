@@ -4,7 +4,7 @@
 // persistence test spawns as a subprocess so persistence is exercised across a true process boundary.
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { z } from 'zod';
+import { z } from 'zod/v4';
 import { createApp, createAuth, startServer, jsonResult, errorResult } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';
 
@@ -56,7 +56,7 @@ export function createFixtureApp(port = 0) {
         {
           title: 'Echo',
           description: 'Returns the message it was given.',
-          inputSchema: { message: z.string() },
+          inputSchema: z.object({ message: z.string() }),
         },
         async ({ message }: { message: string }) => {
           if (message === 'boom') return errorResult(new Error('boom requested'));

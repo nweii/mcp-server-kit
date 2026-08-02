@@ -5,8 +5,8 @@
 import express from 'express';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import { timingSafeEqual } from 'crypto';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { Auth } from './auth.js';
 
 // Registers the server's tools onto a fresh McpServer. Called once per POST /mcp request, so a
@@ -75,7 +75,10 @@ function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | 
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization, Accept, MCP-Protocol-Version, Mcp-Method, Mcp-Name',
+  );
   return true;
 }
 
@@ -149,6 +152,16 @@ export function createApp(opts: CreateAppOptions): Express {
   app.get('/mcp', authMiddleware, methodNotAllowed);
   app.delete('/mcp', authMiddleware, methodNotAllowed);
 
+  const mcpHandler = createMcpHandler(
+    async () => {
+      const server = new McpServer({ name: opts.name, version: opts.version });
+      await opts.registerTools(server);
+      return server;
+    },
+    { responseMode: 'json' },
+  );
+  const nodeMcpHandler = toNodeHandler(mcpHandler);
+
   app.post('/mcp', authMiddleware, async (req, res) => {
     if (!opts.testMode) {
       const body = req.body as { method?: string; params?: { name?: string } };
@@ -156,17 +169,7 @@ export function createApp(opts: CreateAppOptions): Express {
       const toolName = body?.params?.name;
       console.log(`[${ts()}] MCP ${mcpMethod}${toolName ? ` (${toolName})` : ''}`);
     }
-
-    const server = new McpServer({ name: opts.name, version: opts.version });
-    await opts.registerTools(server);
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless — no session tracking
-      enableJsonResponse: true, // return JSON instead of SSE; avoids proxy buffering issues
-    });
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    await nodeMcpHandler(req, res, req.body);
   });
 
   return app;
