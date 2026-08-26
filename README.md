@@ -1,8 +1,18 @@
 # mcp-server-kit
 
-Build a remote [MCP](https://modelcontextprotocol.io) server on Bun, Express, and the MCP TypeScript SDK. The kit provides CORS, request logging, a bearer-gated health endpoint, and a stateless streamable-HTTP `/mcp` route around your own tool-registration function. It also includes OAuth, result, audit-log, and shutdown helpers.
+MCP ServerKit standardizes recurring server plumbing for long-lived Bun + Express [MCP](https://modelcontextprotocol.io) services, usually running in Docker behind a reverse proxy. It serves modern and legacy stateless Streamable HTTP at `/mcp` around your tool-registration function, with CORS, request logging, a bearer-gated health endpoint, result helpers, optional OAuth and audit logging, and process startup/shutdown.
 
 Use `createApp` with your own `authMiddleware` when you already have an authentication layer. Use `createAuth` when this server should issue and verify OAuth access tokens itself.
+
+## When to use it
+
+Use this kit when you are building another service with the same deployment shape and want its transport and operational behavior to match your other MCP services. It is designed for servers that:
+
+- Run as persistent Bun + Express processes.
+- Can provide a writable, persistent filesystem when enabling token persistence or audit logging.
+- Need the included Streamable HTTP transport, OAuth approval flow, health checks, request logging, and process lifecycle.
+
+Keep Cloudflare Workers separate. Workers provide a native stateless [`createMcpHandler`](https://developers.cloudflare.com/agents/model-context-protocol/apis/handler-api/), an OAuth Provider Library and Access integration, and platform storage and secret bindings. Use those primitives directly instead of adapting this kit's Express process, signal handling, and filesystem persistence. Apply the same test to other request-native runtimes: start from the platform's lifecycle, identity, and persistence model. Runtime adapters belong in this package only when multiple implementations demonstrate a stable shared contract. Use the MCP SDK directly when you only need one small helper from the kit.
 
 ## Install
 
@@ -201,13 +211,15 @@ Disabling `dynamicClientRegistration` rejects DCR registrations and their existi
 
 ### The approval guard
 
-`/authorize` is always reachable, so `createAuth` refuses to construct unless one of three guards is configured, and throws otherwise. Pick the one that matches your deployment:
+`/authorize` is always reachable, so `createAuth` refuses to construct unless one of three guards is configured, and throws otherwise. Pick the one that matches your deployment.
+
+The password gate is the standard built-in approval path. Set `approvalPassword` when the service protects `/authorize` itself. If an external gateway such as Cloudflare Access or an authenticated reverse proxy protects `/authorize`, select that boundary explicitly with `approvalOpen: true`.
 
 | Configuration | Set | Behavior |
 | --- | --- | --- |
-| Password gate | `approvalPassword` | The approval page shows a password field; a code is issued only when the correct password is posted. |
+| Password gate | `approvalPassword` | Standard built-in path. The approval page shows a password field; a code is issued only when the correct password is posted. |
+| Explicit external guard | `approvalOpen: true` | Click-to-approve with no password or secret; declares that an external gateway (reverse proxy, zero-trust layer) already guards `/authorize`. |
 | Client-secret guard | `clientSecret` (no password) | The approval page is click-to-approve, but token exchange requires the secret via `client_secret_post`, so a code alone is useless. |
-| Explicit open | `approvalOpen: true` | Click-to-approve with no password or secret; declares that an external gateway (reverse proxy, zero-trust layer) already guards `/authorize`. |
 
 ### OAuth details to know
 
@@ -286,3 +298,7 @@ bun run audit
 ```
 
 The suite assembles the fixture server and exercises it over HTTP: the health contract, `/mcp` method gating and tool listing, CORS behavior, the result-helper shapes observable through the fixture's `echo` tool, the full auth contract (discovery, the PKCE flow, all three approval-gate configurations, static bearer, and error shapes), token persistence across a spawned-process restart, and the audit-logging module's summarization, record shapes, gates, and `registerLogged` wrapper.
+
+## AI disclosure
+
+This kit grew out of consolidating repeated server plumbing across the maintainer's custom MCP servers. AI assisted with that consolidation and the resulting code and documentation, which the maintainer reviewed and tested.

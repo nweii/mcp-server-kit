@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "bun@1.3.11",
-  "description": "Shared scaffolding for remote MCP servers on Bun + Express + the MCP SDK: an app factory, tool-result helpers, and process/shutdown helpers.",
+  "description": "Deployment plumbing for long-lived Bun + Express MCP processes: Streamable HTTP, OAuth, health checks, and process lifecycle.",
   "exports": {
     ".": "./src/index.ts"
   },
