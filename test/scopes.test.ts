@@ -1,5 +1,5 @@
 // Scopes chosen on the approval page: which boxes appear and start ticked, what a connection is
-// granted when a box is left unticked, how grants persist, and the static bearer's configured set.
+// granted when a box is left unticked or not shown, how grants persist, and the static bearer's configured set.
 import { afterEach, expect, test } from 'bun:test';
 import { createAuth } from '../src/index.js';
 import type { ScopeDefinition } from '../src/index.js';
@@ -103,13 +103,14 @@ test('a posted scope that was not declared is never granted', async () => {
   expect((await callWhoami(base, token.access_token)).scopes).toEqual([]);
 });
 
-test('a scope that was not offered at approval counts as granted', async () => {
+test('a scope that was not offered at approval stays withheld after it is offered', async () => {
   let offered = false;
   const scopes = [SCOPES[0]!, { ...SCOPES[1]!, offered: () => offered }];
   const { base } = await recordingServer({ scopes });
-  const token = await connect(base, []);
+  const token = await connect(base, ['notes:write', 'app:control']);
+  expect(token.scope).toBe('notes:write');
   offered = true;
-  expect((await callWhoami(base, token.access_token)).scopes).toEqual(['app:control']);
+  expect((await callWhoami(base, token.access_token)).scopes).toEqual(['notes:write']);
 });
 
 test('a wrong password re-renders the page with the boxes as they were ticked', async () => {
@@ -127,15 +128,25 @@ test('a wrong password re-renders the page with the boxes as they were ticked', 
   expect(ticked(await res.text())).toEqual(['app:control']);
 });
 
-test('withheld scopes survive a restart, and tokens issued before scopes were declared keep every scope', async () => {
+test('grants survive a restart, and tokens issued before scopes were declared keep every scope', async () => {
   const tokenStorePath = storePath();
   const before = await recordingServer({ tokenStorePath, testMode: false });
   const legacy = await connect(before.base, []);
   const after = await recordingServer({ tokenStorePath, testMode: false, scopes: SCOPES });
   const narrowed = await connect(after.base, ['app:control']);
+  const none = await connect(after.base, []);
   const restarted = await recordingServer({ tokenStorePath, testMode: false, scopes: SCOPES });
   expect((await callWhoami(restarted.base, legacy.access_token)).scopes).toEqual(['notes:write', 'app:control']);
   expect((await callWhoami(restarted.base, narrowed.access_token)).scopes).toEqual(['app:control']);
+  expect((await callWhoami(restarted.base, none.access_token)).scopes).toEqual([]);
+});
+
+test('a scope declared after a connection was approved is withheld from it', async () => {
+  const tokenStorePath = storePath();
+  const before = await recordingServer({ tokenStorePath, testMode: false, scopes: [SCOPES[0]!] });
+  const token = await connect(before.base, ['notes:write']);
+  const after = await recordingServer({ tokenStorePath, testMode: false, scopes: SCOPES });
+  expect((await callWhoami(after.base, token.access_token)).scopes).toEqual(['notes:write']);
 });
 
 test('the static bearer gets every scope by default, or the configured set', async () => {

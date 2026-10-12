@@ -76,11 +76,10 @@ export interface AuthConfig {
   // Body text on the approval page ("Allow this client to …?"). Defaults to a generic prompt.
   approvalPrompt?: string;
   // Permissions a person can grant or withhold for each connection they approve. Each offered scope
-  // is a checkbox on the approval page, ticked by default; the scopes left unticked are withheld from
-  // that connection's token for its lifetime. A scope that was not offered when a connection was
-  // approved, and every scope of a token issued before scopes were declared, counts as granted:
-  // approval narrows what the app allows, it never has to opt a connection in. Requests report the
-  // granted scopes in their caller.
+  // is a checkbox on the approval page, ticked by default. A connection holds only the scopes ticked
+  // when it was approved, for its token's lifetime: a scope that was not offered then, or was
+  // declared later, stays withheld until the person connects again. Tokens issued before any scopes
+  // were declared hold every scope. Requests report the granted scopes in their caller.
   scopes?: ScopeDefinition[];
   // Line above the checkboxes. Defaults to "Also allow this connection to:". Use it to say what
   // every connection can do regardless, so the boxes read as additions.
@@ -102,7 +101,8 @@ export interface ScopeDefinition {
   // Optional line under the label with specifics.
   hint?: string;
   // Whether the checkbox appears, evaluated each time the approval page is shown or submitted.
-  // Return false when the app has the capability switched off, so nobody is asked about it.
+  // Return false when the app has the capability switched off, so nobody is asked about it. A hidden
+  // box is withheld from the connection, so base this on settings, not on conditions that come and go.
   // Defaults to always offered.
   offered?: () => boolean | Promise<boolean>;
 }
@@ -141,20 +141,21 @@ interface PendingCode {
   clientId: string;
   redirectUri: string;
   expiresAt: number;
-  withheldScopes: string[];
+  grantedScopes: string[];
 }
 
 interface TokenRecord {
   expiry: number;
   clientId?: string;
-  // Scopes unticked when this connection was approved. Absent means none were withheld.
-  withheldScopes?: string[];
+  // Scopes ticked when this connection was approved. Absent for tokens issued before scopes were
+  // declared, which hold every scope.
+  grantedScopes?: string[];
 }
 
 interface PersistedAuthMetadata {
   clients?: Record<string, OAuthClientInformationFull>;
   tokenClientIds?: Record<string, string>;
-  tokenWithheldScopes?: Record<string, string[]>;
+  tokenGrantedScopes?: Record<string, string[]>;
 }
 
 const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
@@ -180,15 +181,15 @@ class TokenStore {
       const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, unknown>;
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
-      const tokenWithheldScopes = metadata?.tokenWithheldScopes ?? {};
+      const tokenGrantedScopes = metadata?.tokenGrantedScopes ?? {};
       const now = Date.now();
       for (const [token, expiry] of Object.entries(data)) {
         if (typeof expiry === 'number' && expiry > now) {
-          const withheld = tokenWithheldScopes[token];
+          const granted = tokenGrantedScopes[token];
           this.tokens.set(token, {
             expiry,
             clientId: tokenClientIds[token],
-            ...(Array.isArray(withheld) && withheld.length ? { withheldScopes: withheld.filter((s) => typeof s === 'string') } : {}),
+            ...(Array.isArray(granted) ? { grantedScopes: granted.filter((s) => typeof s === 'string') } : {}),
           });
         }
       }
@@ -208,19 +209,19 @@ class TokenStore {
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
-      const tokenWithheldScopes: Record<string, string[]> = {};
-      for (const [token, { expiry, clientId, withheldScopes }] of this.tokens) {
+      const tokenGrantedScopes: Record<string, string[]> = {};
+      for (const [token, { expiry, clientId, grantedScopes }] of this.tokens) {
         data[token] = expiry;
         if (clientId) tokenClientIds[token] = clientId;
-        if (withheldScopes?.length) tokenWithheldScopes[token] = withheldScopes;
+        if (grantedScopes) tokenGrantedScopes[token] = grantedScopes;
       }
       const hasClientIds = Object.keys(tokenClientIds).length > 0;
-      const hasWithheld = Object.keys(tokenWithheldScopes).length > 0;
-      if (this.clients.size || hasClientIds || hasWithheld) {
+      const hasGrants = Object.keys(tokenGrantedScopes).length > 0;
+      if (this.clients.size || hasClientIds || hasGrants) {
         data[PERSISTED_METADATA_KEY] = {
           ...(this.clients.size ? { clients: Object.fromEntries(this.clients) } : {}),
           ...(hasClientIds ? { tokenClientIds } : {}),
-          ...(hasWithheld ? { tokenWithheldScopes } : {}),
+          ...(hasGrants ? { tokenGrantedScopes } : {}),
         } satisfies PersistedAuthMetadata;
       }
       writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 });
@@ -259,14 +260,15 @@ class TokenStore {
     return p;
   }
 
-  issueToken(clientId: string, staticClientId: string, withheldScopes: string[]): string {
+  // grantedScopes is undefined when the app declares no scopes.
+  issueToken(clientId: string, staticClientId: string, grantedScopes: string[] | undefined): string {
     this.prune();
     const token = randomUUID();
     const previous = this.tokens.get(token);
     this.tokens.set(token, {
       expiry: Date.now() + TOKEN_TTL_MS,
       ...(clientId === staticClientId ? {} : { clientId }),
-      ...(withheldScopes.length ? { withheldScopes } : {}),
+      ...(grantedScopes ? { grantedScopes } : {}),
     });
     if (!this.save()) {
       if (previous) this.tokens.set(token, previous);
@@ -574,10 +576,10 @@ export function createAuth(config: AuthConfig): Auth {
     };
   }
 
-  // Every declared scope except the withheld ones. Withheld ids that are no longer declared are
-  // ignored, and a scope declared after the token was issued counts as granted.
-  function grantedScopes(withheld: readonly string[]): string[] {
-    return scopeIds.filter((id) => !withheld.includes(id));
+  // The declared scopes a token holds, in declaration order. Granted ids that are no longer declared
+  // are ignored; a token with no recorded grants predates scopes and holds every one.
+  function heldScopes(granted: readonly string[] | undefined): string[] {
+    return granted ? scopeIds.filter((id) => granted.includes(id)) : scopeIds;
   }
 
   function passwordValid(password: string): boolean {
@@ -714,7 +716,8 @@ export function createAuth(config: AuthConfig): Auth {
         );
         return;
       }
-      const withheldScopes = offered.map((s) => s.id).filter((id) => !granted.has(id));
+      // Only boxes on this page can be granted, so a posted scope that was not offered is ignored.
+      const grantedScopes = offered.map((s) => s.id).filter((id) => granted.has(id));
 
       const code = randomUUID();
       store.putCode(code, {
@@ -722,7 +725,7 @@ export function createAuth(config: AuthConfig): Auth {
         clientId: client.client_id,
         redirectUri: params.redirectUri,
         expiresAt: Date.now() + CODE_TTL_MS,
-        withheldScopes,
+        grantedScopes,
       });
       const url = new URL(params.redirectUri);
       url.searchParams.set('code', code);
@@ -750,8 +753,8 @@ export function createAuth(config: AuthConfig): Auth {
       if (client.client_id !== pending.clientId || redirectUri !== pending.redirectUri) {
         throw new InvalidGrantError('client_id or redirect_uri mismatch');
       }
-      const token = store.issueToken(client.client_id, staticClient.client_id, pending.withheldScopes);
-      const granted = grantedScopes(pending.withheldScopes);
+      const token = store.issueToken(client.client_id, staticClient.client_id, scopeIds.length ? pending.grantedScopes : undefined);
+      const granted = heldScopes(pending.grantedScopes);
       return {
         access_token: token,
         token_type: 'bearer',
@@ -780,7 +783,7 @@ export function createAuth(config: AuthConfig): Auth {
       const record = store.tokenRecord(token);
       if (record !== undefined) {
         const expiresAt = Math.floor(record.expiry / 1000);
-        const scopes = grantedScopes(record.withheldScopes ?? []);
+        const scopes = heldScopes(record.grantedScopes);
         if (record.clientId) {
           const dynamicClient = store.getClient(record.clientId);
           if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
