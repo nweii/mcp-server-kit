@@ -5,177 +5,15 @@
 // (token endpoint at /token, spec-shaped redirect/JSON authorize errors, SDK 401 bodies) at the
 // feature level, exercising each behavior end to end over HTTP.
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import type { Server } from 'http';
-import { createHash, randomBytes, randomUUID } from 'crypto';
-import { chmodSync, mkdirSync, readFileSync } from 'fs';
-import { createServer } from 'net';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { chmodSync, readFileSync } from 'fs';
 import { createApp, createAuth } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';
+import {
+  REDIRECT, approve, approveRegistered, closeAll, open, exchange, freePort, issueRegisteredToken, pkce,
+  registerPublicClient, standup, standupAt, storeDirectory, storePath,
+} from './helpers.js';
 
-const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
-const open: Server[] = [];
-
-afterEach(() => {
-  for (const s of open.splice(0)) s.close();
-});
-
-function storePath(): string {
-  return join(tmpdir(), `kit-auth-${randomUUID()}.json`);
-}
-
-function storeDirectory(): { directory: string; path: string } {
-  const directory = join(tmpdir(), `kit-auth-${randomUUID()}`);
-  mkdirSync(directory, { mode: 0o700 });
-  return { directory, path: join(directory, 'tokens.json') };
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.once('error', reject);
-    srv.listen(0, () => {
-      const addr = srv.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-// Grab a free port, build auth + app with baseUrl pinned to it (so discovery reports the real URL),
-// then listen on that exact port. Returns the live base URL.
-async function standup(overrides: Partial<AuthConfig> = {}): Promise<string> {
-  const port = await freePort();
-  const base = `http://localhost:${port}`;
-  const auth = createAuth({
-    baseUrl: base,
-    clientId: 'test-client',
-    displayName: 'kit-auth-fixture',
-    tokenStorePath: storePath(),
-    approvalPassword: 'sekret',
-    disableRateLimit: true,
-    ...overrides,
-  });
-  const app = createApp({ name: 'kit-auth-fixture', version: '0.0.0', auth, testMode: true, registerTools: () => {} });
-  await new Promise<void>((resolve) => {
-    const server = app.listen(port, '127.0.0.1', () => {
-      open.push(server);
-      resolve();
-    });
-  });
-  return base;
-}
-
-async function standupAt(port: number, config: AuthConfig): Promise<{ base: string; server: Server; auth: ReturnType<typeof createAuth> }> {
-  const auth = createAuth(config);
-  const app = createApp({ name: 'kit-auth-fixture', version: '0.0.0', auth, testMode: true, registerTools: () => {} });
-  const server = await new Promise<Server>((resolve) => {
-    const listening = app.listen(port, '127.0.0.1', () => resolve(listening));
-  });
-  open.push(server);
-  return { base: `http://localhost:${port}`, server, auth };
-}
-
-function pkce() {
-  const verifier = randomBytes(32).toString('base64url');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
-  return { verifier, challenge };
-}
-
-async function approve(base: string, challenge: string, extra: Record<string, string> = {}) {
-  const res = await fetch(`${base}/authorize`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      response_type: 'code',
-      client_id: 'test-client',
-      redirect_uri: REDIRECT,
-      code_challenge: challenge,
-      code_challenge_method: 'S256',
-      ...extra,
-    }),
-  });
-  const location = res.headers.get('location') ?? undefined;
-  const code = location ? (new URL(location).searchParams.get('code') ?? undefined) : undefined;
-  return { status: res.status, code, location };
-}
-
-async function exchange(base: string, code: string, verifier: string, extra: Record<string, string> = {}) {
-  return fetch(`${base}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      code_verifier: verifier,
-      client_id: 'test-client',
-      redirect_uri: REDIRECT,
-      ...extra,
-    }),
-  });
-}
-
-type RegisteredClient = { client_id: string; client_secret?: string; redirect_uris: string[]; token_endpoint_auth_method?: string };
-
-async function registerPublicClient(base: string, redirectUri = 'com.example.mcp:/oauth/callback') {
-  const res = await fetch(`${base}/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      redirect_uris: [redirectUri],
-      token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code'],
-      response_types: ['code'],
-      client_name: 'Native MCP client',
-    }),
-  });
-  return { res, body: (await res.json()) as RegisteredClient & { error?: string } };
-}
-
-async function approveRegistered(
-  base: string,
-  clientId: string,
-  redirectUri: string,
-  challenge: string,
-  extra: Record<string, string> = {},
-) {
-  const res = await fetch(`${base}/authorize`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      response_type: 'code',
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      code_challenge: challenge,
-      code_challenge_method: 'S256',
-      ...extra,
-    }),
-  });
-  const location = res.headers.get('location') ?? undefined;
-  return { status: res.status, code: location ? new URL(location).searchParams.get('code') ?? undefined : undefined };
-}
-
-async function issueRegisteredToken(base: string, clientId: string, redirectUri: string): Promise<string> {
-  const { verifier, challenge } = pkce();
-  const approval = await approveRegistered(base, clientId, redirectUri, challenge, { password: 'sekret' });
-  expect(approval.code).toBeTruthy();
-  const token = await fetch(`${base}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: approval.code!,
-      code_verifier: verifier,
-      client_id: clientId,
-      redirect_uri: redirectUri,
-    }),
-  });
-  expect(token.status).toBe(200);
-  return ((await token.json()) as { access_token: string }).access_token;
-}
+afterEach(closeAll);
 
 // --- Discovery (SDK-emitted) -------------------------------------------------
 
@@ -698,7 +536,7 @@ test('GET /authorize renders the approval page for valid params', async () => {
   const url = `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`;
   const res = await fetch(url);
   expect(res.status).toBe(200);
-  expect(await res.text()).toContain('Approve');
+  expect(await res.text()).toContain('Allow access');
 });
 
 test('phase-1 errors are direct 400 JSON (unknown client, unregistered redirect)', async () => {
@@ -762,8 +600,9 @@ test('password gate: a wrong password issues no code and re-renders with an erro
     }),
   });
   const html = await res.text();
-  expect(html).toContain('Incorrect password.');
-  expect(html).toContain('Approve');
+  expect(html).toContain('<p class="error" id="password-error">Incorrect password. Try again.</p>');
+  expect(html).toContain('aria-invalid="true" aria-describedby="password-error" autofocus');
+  expect(html).toContain('Allow access');
 });
 
 test('password gate: the approval redirect preserves the state parameter', async () => {

@@ -7,11 +7,17 @@ import type { Express, NextFunction, Request, RequestHandler, Response } from 'e
 import { timingSafeEqual } from 'crypto';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 import type { Auth } from './auth.js';
+import { callerFromAuthInfo, currentCaller, runAsCaller } from './caller.js';
+import type { Caller } from './caller.js';
 
 // Registers the server's tools onto a fresh McpServer. Called once per POST /mcp request, so a
-// slow or async registration (reading a store, awaiting I/O) is supported.
-export type RegisterTools = (server: McpServer) => void | Promise<void>;
+// slow or async registration (reading a store, awaiting I/O) is supported, and so the tool set can
+// differ by caller. `caller` is the verified client making the request (also available anywhere in
+// the request through currentCaller()); it is undefined when /mcp is guarded by a bare
+// authMiddleware rather than the kit's auth module.
+export type RegisterTools = (server: McpServer, caller: Caller | undefined) => void | Promise<void>;
 
 export interface CreateAppOptions {
   // Display name and version reported in MCP server info and the health body.
@@ -167,7 +173,7 @@ export function createApp(opts: CreateAppOptions): Express {
   const mcpHandler = createMcpHandler(
     async () => {
       const server = new McpServer({ name: opts.name, version: opts.version });
-      await opts.registerTools(server);
+      await opts.registerTools(server, currentCaller());
       return server;
     },
     { responseMode: 'json' },
@@ -181,7 +187,9 @@ export function createApp(opts: CreateAppOptions): Express {
       const toolName = body?.params?.name;
       console.log(`[${ts()}] MCP ${mcpMethod}${toolName ? ` (${toolName})` : ''}`);
     }
-    await nodeMcpHandler(req, res, req.body);
+    // Everything the request does, from tool registration to each tool handler, runs as its caller.
+    const caller = callerFromAuthInfo((req as Request & { auth?: AuthInfo }).auth);
+    await runAsCaller(caller, () => nodeMcpHandler(req, res, req.body));
   });
 
   return app;

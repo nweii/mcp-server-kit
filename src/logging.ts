@@ -1,11 +1,13 @@
 // Opt-in audit logging for tool calls: an append-only JSONL trail plus a registerLogged wrapper that
-// times each tool handler and records its outcome (arguments summarized, ok/error, duration). The
+// times each tool handler and records its outcome (arguments summarized, ok/error, duration). Records
+// written during an /mcp request name its caller (client id, and the client's declared name). The
 // caller supplies the log directory, which argument names to redact, and the enable/suppress gates,
 // so nothing here is tied to a particular server's tools or environment variables.
 import { mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolResult } from './results.js';
+import { currentCaller } from './caller.js';
 
 export interface AuditLogConfig {
   // Directory the JSONL files are written to. Created lazily on the first write.
@@ -113,9 +115,17 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
     return args;
   }
 
+  // The current request's caller, as record fields. Empty outside a request.
+  function callerFields(): Record<string, string> {
+    const caller = currentCaller();
+    if (!caller) return {};
+    return { client: caller.clientId, ...(caller.clientName ? { client_name: caller.clientName } : {}) };
+  }
+
   function logToolCall(entry: ToolCallLog) {
     appendJsonl(toolCallsFile, {
       ts: new Date().toISOString(),
+      ...callerFields(),
       tool: entry.tool,
       args: summarizeArgs(entry.args),
       ok: entry.ok,
@@ -127,6 +137,7 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
   function logFeedback(entry: FeedbackLog) {
     appendJsonl(feedbackFile, {
       ts: new Date().toISOString(),
+      ...callerFields(),
       ...entry,
     });
   }
