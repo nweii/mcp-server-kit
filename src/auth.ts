@@ -156,6 +156,9 @@ interface PersistedAuthMetadata {
   clients?: Record<string, OAuthClientInformationFull>;
   tokenClientIds?: Record<string, string>;
   tokenGrantedScopes?: Record<string, string[]>;
+  // Written by an earlier version that recorded unticked scopes. Tokens listed here are dropped on
+  // load: their grants can't be reconstructed safely, so those connections approve again.
+  tokenWithheldScopes?: Record<string, string[]>;
 }
 
 const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
@@ -182,9 +185,10 @@ class TokenStore {
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
       const tokenGrantedScopes = metadata?.tokenGrantedScopes ?? {};
+      const legacyWithheld = metadata?.tokenWithheldScopes ?? {};
       const now = Date.now();
       for (const [token, expiry] of Object.entries(data)) {
-        if (typeof expiry === 'number' && expiry > now) {
+        if (typeof expiry === 'number' && expiry > now && !(token in legacyWithheld)) {
           const granted = tokenGrantedScopes[token];
           this.tokens.set(token, {
             expiry,

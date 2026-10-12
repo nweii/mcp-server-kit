@@ -1,6 +1,7 @@
 // Scopes chosen on the approval page: which boxes appear and start ticked, what a connection is
 // granted when a box is left unticked or not shown, how grants persist, and the static bearer's configured set.
 import { afterEach, expect, test } from 'bun:test';
+import { writeFileSync } from 'fs';
 import { createAuth } from '../src/index.js';
 import type { ScopeDefinition } from '../src/index.js';
 import { REDIRECT, callWhoami, closeAll, exchange, pkce, recordingServer, storePath } from './helpers.js';
@@ -139,6 +140,20 @@ test('grants survive a restart, and tokens issued before scopes were declared ke
   expect((await callWhoami(restarted.base, legacy.access_token)).scopes).toEqual(['notes:write', 'app:control']);
   expect((await callWhoami(restarted.base, narrowed.access_token)).scopes).toEqual(['app:control']);
   expect((await callWhoami(restarted.base, none.access_token)).scopes).toEqual([]);
+});
+
+test('a token stored with unticked scopes by an earlier version is dropped, not widened', async () => {
+  const tokenStorePath = storePath();
+  const expiry = Date.now() + 60_000;
+  writeFileSync(tokenStorePath, JSON.stringify({
+    narrowed: expiry,
+    full: expiry,
+    __mcp_server_kit_auth_metadata__: { tokenWithheldScopes: { narrowed: ['notes:write'] } },
+  }));
+  const { base } = await recordingServer({ tokenStorePath, testMode: false, scopes: SCOPES });
+  expect((await callWhoami(base, 'full')).scopes).toEqual(['notes:write', 'app:control']);
+  const res = await fetch(`${base}/mcp`, { method: 'POST', headers: { Authorization: 'Bearer narrowed', 'Content-Type': 'application/json' }, body: '{}' });
+  expect(res.status).toBe(401);
 });
 
 test('a scope declared after a connection was approved is withheld from it', async () => {
