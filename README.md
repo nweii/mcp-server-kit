@@ -255,8 +255,8 @@ Write each label as what the box adds beyond what every connection can already d
 
 How grants behave:
 
-- `offered` hides a checkbox while your app has that capability switched off. A scope that was not offered when a connection was approved counts as granted, so switching a capability on later reaches existing connections without reconnecting them. Your app's own setting stays the limit.
-- Tokens issued before you declared scopes, or before you added a scope, count as having it. Declaring scopes never takes access away from an existing connection.
+- A connection holds only the boxes ticked when it was approved. `offered` hides a checkbox while your app has that capability switched off, and a hidden box is withheld: switching the capability on later reaches a connection only once the person connects again and ticks it. Base `offered` on your app's settings rather than on conditions that come and go, so a box isn't missing by chance when someone approves.
+- A scope you add later is withheld from connections approved before it existed. Tokens issued before you declared any scopes hold every scope, so declaring scopes never takes access away from an existing connection.
 - If a client asks for declared scopes in its authorization request, the page starts with only those ticked. Undeclared scopes in a request are ignored and are never granted.
 - To change a connection's access, the person connects again and approves with different choices.
 - Requests using `staticBearerToken` get `staticBearerScopes`, or every declared scope when that is unset.
