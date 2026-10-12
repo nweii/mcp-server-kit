@@ -62,6 +62,17 @@ test('a scope that is not offered right now has no checkbox', async () => {
   expect(html).not.toContain('value="app:control"');
 });
 
+test('discovery metadata lists the declared scopes, and omits the list when none are declared', async () => {
+  const { base } = await recordingServer({ scopes: SCOPES });
+  for (const doc of ['oauth-authorization-server', 'oauth-protected-resource']) {
+    const meta = (await (await fetch(`${base}/.well-known/${doc}`)).json()) as { scopes_supported?: string[] };
+    expect(meta.scopes_supported).toEqual(['notes:write', 'app:control']);
+  }
+  const { base: plain } = await recordingServer();
+  const meta = (await (await fetch(`${plain}/.well-known/oauth-authorization-server`)).json()) as { scopes_supported?: string[] };
+  expect(meta.scopes_supported).toBeUndefined();
+});
+
 test('the page has no access section when no scopes are declared', async () => {
   const { base } = await recordingServer();
   expect(await approvalPage(base)).not.toContain('class="access"');

@@ -27,10 +27,11 @@ export function currentCaller(): Caller | undefined {
   return context.getStore();
 }
 
-// Runs fn as the given caller. The app factory uses this for each /mcp request; apps can use it in
-// tests to exercise per-caller behavior without an HTTP round trip.
+// Runs fn as the given caller, or with no caller when it is undefined, even inside another
+// caller's context. The app factory uses this for each /mcp request; apps can use it in tests to
+// exercise per-caller behavior without an HTTP round trip.
 export function runAsCaller<T>(caller: Caller | undefined, fn: () => T): T {
-  return caller ? context.run(caller, fn) : fn();
+  return caller ? context.run(caller, fn) : context.exit(fn);
 }
 
 // The caller described by verified auth info, or undefined for auth info the kit's auth module did

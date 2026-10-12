@@ -792,6 +792,7 @@ export function createAuth(config: AuthConfig): Auth {
     issuerUrl: issuer,
     baseUrl: issuer,
     resourceName: config.displayName,
+    ...(scopeIds.length ? { scopesSupported: scopeIds } : {}),
     ...(rate ? { authorizationOptions: rate, tokenOptions: rate, clientRegistrationOptions: rate } : {}),
   });
 

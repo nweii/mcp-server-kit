@@ -41,6 +41,13 @@ test('there is no caller outside a request', () => {
   expect(currentCaller()).toBeUndefined();
 });
 
+test('running as no caller inside another caller leaves no caller', () => {
+  runAsCaller({ clientId: 'outer', kind: 'static', scopes: [] }, () => {
+    runAsCaller(undefined, () => expect(currentCaller()).toBeUndefined());
+    expect(currentCaller()?.clientId).toBe('outer');
+  });
+});
+
 test('audit records name the caller when written during a request', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kit-caller-log-'));
   const log = createAuditLog({ logDir: dir });
