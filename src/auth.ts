@@ -23,8 +23,13 @@ import type {
   OAuthServerProvider,
 } from '@modelcontextprotocol/server-legacy/auth';
 import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/server';
+import type { CallerKind } from './caller.js';
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// Client id reported for requests authenticated with the static bearer token. Distinct from the
+// configured client's id, so logs and per-caller policy can tell the two apart.
+export const STATIC_BEARER_CLIENT_ID = 'static-bearer';
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Verified OAuth callback URIs for common MCP clients, used when a caller does not supply its own
@@ -59,7 +64,8 @@ export interface AuthConfig {
   // additionally restrict which redirects may register. Omit entirely to keep /register unavailable.
   dynamicClientRegistration?: DynamicClientRegistrationConfig;
   // Optional long-lived bearer accepted on /mcp in addition to issued tokens, for clients that send
-  // a fixed Authorization header. Not part of the OAuth flow.
+  // a fixed Authorization header. Not part of the OAuth flow. Requests using it report the client id
+  // STATIC_BEARER_CLIENT_ID.
   staticBearerToken?: string;
   // Enables the password gate: the approval page grows a password field and issues a code only when
   // the correct password is posted. Satisfies the approval guard.
@@ -383,6 +389,11 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+// AuthInfo.extra as callerFromAuthInfo reads it.
+function callerExtra(kind: CallerKind, clientName?: string): Record<string, unknown> {
+  return clientName ? { kind, clientName } : { kind };
+}
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -634,20 +645,24 @@ export function createAuth(config: AuthConfig): Auth {
       if (staticBearer && constantTimeEqual(token, staticBearer)) {
         return {
           token,
-          clientId: config.clientId,
+          clientId: STATIC_BEARER_CLIENT_ID,
           scopes: [],
           expiresAt: Math.floor((Date.now() + TOKEN_TTL_MS) / 1000),
+          extra: callerExtra('bearer'),
         };
       }
       const record = store.tokenRecord(token);
       if (record !== undefined) {
+        const expiresAt = Math.floor(record.expiry / 1000);
         if (record.clientId) {
           const dynamicClient = store.getClient(record.clientId);
           if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
             throw new InvalidTokenError('invalid or expired access token');
           }
+          const clientName = (dynamicClient as { client_name?: string }).client_name?.trim() || undefined;
+          return { token, clientId: record.clientId, scopes: [], expiresAt, extra: callerExtra('dynamic', clientName) };
         }
-        return { token, clientId: record.clientId ?? staticClient.client_id, scopes: [], expiresAt: Math.floor(record.expiry / 1000) };
+        return { token, clientId: staticClient.client_id, scopes: [], expiresAt, extra: callerExtra('static') };
       }
       // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
       throw new InvalidTokenError('invalid or expired access token');

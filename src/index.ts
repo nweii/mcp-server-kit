@@ -2,7 +2,9 @@
 // helpers, plus their types.
 export { createApp } from './app.js';
 export type { CreateAppOptions, RegisterTools } from './app.js';
-export { createAuth, DEFAULT_ALLOWED_REDIRECT_URIS } from './auth.js';
+export { createAuth, DEFAULT_ALLOWED_REDIRECT_URIS, STATIC_BEARER_CLIENT_ID } from './auth.js';
+export { currentCaller, runAsCaller } from './caller.js';
+export type { Caller, CallerKind } from './caller.js';
 export type { Auth, AuthConfig, DynamicClientRegistrationConfig } from './auth.js';
 export { startServer } from './process.js';
 export type { StartServerOptions } from './process.js';

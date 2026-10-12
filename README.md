@@ -91,7 +91,7 @@ bun run fixture/server.ts
 | --- | --- | --- |
 | `name` | `string` | MCP server display name. |
 | `version` | `string` | Reported in MCP server info and the health body. |
-| `registerTools` | `(server) => void \| Promise<void>` | Registers tools onto each per-request `McpServer`. |
+| `registerTools` | `(server, caller) => void \| Promise<void>` | Registers tools onto each per-request `McpServer`. `caller` is the client making the request (see [Know who is calling](#know-who-is-calling)), or `undefined` when `/mcp` is guarded by `authMiddleware`. |
 | `auth` | `Auth?` | The auth module from `createAuth`; mounts its OAuth routes and guards `/mcp`. Provide this or `authMiddleware`. |
 | `authMiddleware` | `express.RequestHandler?` | A bare middleware guarding `/mcp`, as an alternative to `auth`. Ignored when `auth` is set. |
 | `healthToken` | `string?` | Bearer for `/health`; omit to return `404`. |
@@ -193,6 +193,21 @@ ChatGPT desktop and Codex can use this route because they can discover `/registe
 
 Static bearer does not replace the approval guard. OAuth-capable clients should use the OAuth flow instead, especially when DCR is available.
 
+Requests using the static bearer report the client id `STATIC_BEARER_CLIENT_ID` (`static-bearer`), never the pre-registered client's id, so logs and per-client rules can tell them apart.
+
+### Know who is calling
+
+Every `/mcp` request runs as its caller: the client behind the bearer token. `registerTools` receives it as its second argument, and `currentCaller()` returns it anywhere during the request, including inside tool handlers and the code they call. Outside a request it returns `undefined`.
+
+| Field | Notes |
+| --- | --- |
+| `clientId` | The pre-registered client's id, a registered client's generated id, or `static-bearer`. |
+| `clientName` | The name a registered client declared for itself. Self-asserted, so show it to people but don't base decisions on it. |
+| `kind` | `'static'` (pre-registered client), `'dynamic'` (registered through DCR) or `'bearer'` (static bearer token). |
+| `scopes` | The scopes the connection was granted. |
+
+Because registration runs per request, the tool set can differ by caller. `runAsCaller(caller, fn)` runs `fn` as a given caller, for tests that exercise per-caller behavior without an HTTP round trip.
+
 ### Managing registered clients
 
 `createAuth` returns management methods for use behind your own administration surface. The kit does not expose an HTTP administration route. `listDynamicClients()` returns registered public clients. `revokeDynamicClient(clientId)` permanently removes one registration and every access token issued to it. `clearDynamicClients()` does the same for every DCR registration. If the token store cannot be updated, either revocation method throws and leaves the in-memory registration and tokens intact.
@@ -252,7 +267,7 @@ The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, `listDyn
 
 ## Audit logging
 
-`createAuditLog(config)` returns an opt-in JSONL audit trail for tool calls and feedback. Its `registerLogged` wrapper times each tool handler and records its outcome. It writes `tool-calls.jsonl` (timestamp, tool name, summarized arguments, outcome, duration, and error text) and `feedback.jsonl` under `logDir`.
+`createAuditLog(config)` returns an opt-in JSONL audit trail for tool calls and feedback. Its `registerLogged` wrapper times each tool handler and records its outcome. It writes `tool-calls.jsonl` (timestamp, tool name, summarized arguments, outcome, duration, and error text) and `feedback.jsonl` under `logDir`. Records written during an `/mcp` request also carry `client` (the caller's client id) and, when the client declared one, `client_name`.
 
 ```ts
 import { createAuditLog } from 'mcp-server-kit';
