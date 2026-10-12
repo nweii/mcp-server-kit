@@ -536,7 +536,7 @@ test('GET /authorize renders the approval page for valid params', async () => {
   const url = `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`;
   const res = await fetch(url);
   expect(res.status).toBe(200);
-  expect(await res.text()).toContain('Approve');
+  expect(await res.text()).toContain('Allow access');
 });
 
 test('phase-1 errors are direct 400 JSON (unknown client, unregistered redirect)', async () => {
@@ -600,8 +600,9 @@ test('password gate: a wrong password issues no code and re-renders with an erro
     }),
   });
   const html = await res.text();
-  expect(html).toContain('Incorrect password.');
-  expect(html).toContain('Approve');
+  expect(html).toContain('<p class="error" id="password-error">Incorrect password. Try again.</p>');
+  expect(html).toContain('aria-invalid="true" aria-describedby="password-error" autofocus');
+  expect(html).toContain('Allow access');
 });
 
 test('password gate: the approval redirect preserves the state parameter', async () => {

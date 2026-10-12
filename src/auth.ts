@@ -602,7 +602,7 @@ export function createAuth(config: AuthConfig): Auth {
     return `<fieldset class="access">
       <legend>${escapeHtml(scopesPrompt)}</legend>
       ${rows}
-      <p class="note">To change this later, connect again and approve with different choices.</p>
+      <p class="note">To change these later, connect again.</p>
     </fieldset>`;
   }
 
@@ -610,31 +610,43 @@ export function createAuth(config: AuthConfig): Auth {
     inputsHtml: string,
     opts: { error?: string; requester?: string; scopesHtml?: string } = {},
   ): string {
-    const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
     const requesterHtml = opts.requester
-      ? `<p style="color:#111;margin-bottom:1rem">Request from <strong>${escapeHtml(opts.requester)}</strong></p>`
+      ? `<p class="requester">Request from <strong>${escapeHtml(opts.requester)}</strong></p>`
       : '';
+    // A wrong password is reported under the field it concerns, tied to it for screen readers, with
+    // focus returned to the field so the next attempt starts there.
+    const errorHtml = opts.error ? `<p class="error" id="password-error">${escapeHtml(opts.error)}</p>` : '';
+    const errorAttrs = opts.error ? ' aria-invalid="true" aria-describedby="password-error" autofocus' : '';
     const credentialFields = passwordGate
-      ? `<div style="margin:0 0 1rem"><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></div>`
+      ? `<div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password"${errorAttrs}>
+      ${errorHtml}
+    </div>`
       : '';
     const name = escapeHtml(config.displayName);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Authorize ${name}</title>
   <style>
-    body   { font-family: system-ui, sans-serif; max-width: 400px; margin: 80px auto; padding: 0 1rem; color: #111; }
+    body   { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 400px; margin: 80px auto; padding: 0 1rem; color: #111; }
     h1     { font-size: 1.25rem; margin-bottom: 0.5rem; }
     p      { color: #555; margin-bottom: 1.5rem; }
     label  { color: #111; }
-    input[type=password] { width: 100%; padding: 0.4rem; font-size: 1rem; margin-top: 0.25rem; box-sizing: border-box; }
+    .requester { color: #111; margin-bottom: 1rem; }
+    .field { margin: 0 0 1.25rem; }
+    .field label { display: block; margin-bottom: 0.25rem; }
+    input[type=password] { width: 100%; padding: 0.4rem; font-size: 1rem; box-sizing: border-box; }
+    .error { color: #b00; font-size: 0.875rem; margin: 0.35rem 0 0; }
     button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; }
     .access { border: 0; padding: 0; margin: 0 0 1.25rem; }
     .access legend { padding: 0; margin-bottom: 0.5rem; color: #111; }
     .scope { display: flex; gap: 0.6rem; align-items: flex-start; margin: 0.6rem 0; cursor: pointer; }
     .scope input { margin: 0.2rem 0 0; flex: none; }
-    .scope small { display: block; color: #555; margin-top: 0.15rem; font-size: 0.875rem; }
+    .scope small { display: block; color: #555; margin-top: 0.15rem; font-size: 0.875rem; line-height: 1.4; }
     .access .note { font-size: 0.875rem; margin: 0.75rem 0 0; }
   </style>
 </head>
@@ -642,12 +654,11 @@ export function createAuth(config: AuthConfig): Auth {
   <h1>Authorize ${name}</h1>
   <p>${escapeHtml(approvalPrompt)}</p>
   ${requesterHtml}
-  ${errorHtml}
   <form method="POST" action="/authorize">
     ${inputsHtml}
     ${opts.scopesHtml ?? ''}
     ${credentialFields}
-    <button type="submit">Approve</button>
+    <button type="submit">Allow access</button>
   </form>
 </body>
 </html>`;
@@ -699,7 +710,7 @@ export function createAuth(config: AuthConfig): Auth {
       const granted = new Set((Array.isArray(grantField) ? grantField : [grantField]).filter((v): v is string => typeof v === 'string'));
       if (passwordGate && !passwordValid((body.password ?? '').toString())) {
         res.status(401).type('html').send(
-          renderApprovalPage(hidden, { error: 'Incorrect password.', requester, scopesHtml: renderScopes(offered, granted) }),
+          renderApprovalPage(hidden, { error: 'Incorrect password. Try again.', requester, scopesHtml: renderScopes(offered, granted) }),
         );
         return;
       }
