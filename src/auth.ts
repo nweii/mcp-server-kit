@@ -75,10 +75,36 @@ export interface AuthConfig {
   approvalOpen?: boolean;
   // Body text on the approval page ("Allow this client to …?"). Defaults to a generic prompt.
   approvalPrompt?: string;
+  // Permissions a person can grant or withhold for each connection they approve. Each offered scope
+  // is a checkbox on the approval page, ticked by default; the scopes left unticked are withheld from
+  // that connection's token for its lifetime. A scope that was not offered when a connection was
+  // approved, and every scope of a token issued before scopes were declared, counts as granted:
+  // approval narrows what the app allows, it never has to opt a connection in. Requests report the
+  // granted scopes in their caller.
+  scopes?: ScopeDefinition[];
+  // Line above the checkboxes. Defaults to "Also allow this connection to:". Use it to say what
+  // every connection can do regardless, so the boxes read as additions.
+  scopesPrompt?: string;
+  // Scopes granted to requests using staticBearerToken. Defaults to every declared scope. Each entry
+  // must name a declared scope.
+  staticBearerScopes?: string[];
   // When true, skips loading the persisted token store at construction and enables seedTestToken.
   testMode?: boolean;
   // When true, disables the SDK's per-endpoint rate limiting (useful under test load).
   disableRateLimit?: boolean;
+}
+
+export interface ScopeDefinition {
+  // The scope string granted in tokens, such as "notes:write".
+  id: string;
+  // Checkbox label: what the scope adds beyond what every connection can already do.
+  label: string;
+  // Optional line under the label with specifics.
+  hint?: string;
+  // Whether the checkbox appears, evaluated each time the approval page is shown or submitted.
+  // Return false when the app has the capability switched off, so nobody is asked about it.
+  // Defaults to always offered.
+  offered?: () => boolean | Promise<boolean>;
 }
 
 export interface DynamicClientRegistrationConfig {
@@ -115,16 +141,20 @@ interface PendingCode {
   clientId: string;
   redirectUri: string;
   expiresAt: number;
+  withheldScopes: string[];
 }
 
 interface TokenRecord {
   expiry: number;
   clientId?: string;
+  // Scopes unticked when this connection was approved. Absent means none were withheld.
+  withheldScopes?: string[];
 }
 
 interface PersistedAuthMetadata {
   clients?: Record<string, OAuthClientInformationFull>;
   tokenClientIds?: Record<string, string>;
+  tokenWithheldScopes?: Record<string, string[]>;
 }
 
 const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
@@ -150,10 +180,16 @@ class TokenStore {
       const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, unknown>;
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
+      const tokenWithheldScopes = metadata?.tokenWithheldScopes ?? {};
       const now = Date.now();
       for (const [token, expiry] of Object.entries(data)) {
         if (typeof expiry === 'number' && expiry > now) {
-          this.tokens.set(token, { expiry, clientId: tokenClientIds[token] });
+          const withheld = tokenWithheldScopes[token];
+          this.tokens.set(token, {
+            expiry,
+            clientId: tokenClientIds[token],
+            ...(Array.isArray(withheld) && withheld.length ? { withheldScopes: withheld.filter((s) => typeof s === 'string') } : {}),
+          });
         }
       }
       if (metadata?.clients) {
@@ -172,14 +208,19 @@ class TokenStore {
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
-      for (const [token, { expiry, clientId }] of this.tokens) {
+      const tokenWithheldScopes: Record<string, string[]> = {};
+      for (const [token, { expiry, clientId, withheldScopes }] of this.tokens) {
         data[token] = expiry;
         if (clientId) tokenClientIds[token] = clientId;
+        if (withheldScopes?.length) tokenWithheldScopes[token] = withheldScopes;
       }
-      if (this.clients.size || Object.keys(tokenClientIds).length) {
+      const hasClientIds = Object.keys(tokenClientIds).length > 0;
+      const hasWithheld = Object.keys(tokenWithheldScopes).length > 0;
+      if (this.clients.size || hasClientIds || hasWithheld) {
         data[PERSISTED_METADATA_KEY] = {
           ...(this.clients.size ? { clients: Object.fromEntries(this.clients) } : {}),
-          ...(Object.keys(tokenClientIds).length ? { tokenClientIds } : {}),
+          ...(hasClientIds ? { tokenClientIds } : {}),
+          ...(hasWithheld ? { tokenWithheldScopes } : {}),
         } satisfies PersistedAuthMetadata;
       }
       writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 });
@@ -218,11 +259,15 @@ class TokenStore {
     return p;
   }
 
-  issueToken(clientId: string, staticClientId: string): string {
+  issueToken(clientId: string, staticClientId: string, withheldScopes: string[]): string {
     this.prune();
     const token = randomUUID();
     const previous = this.tokens.get(token);
-    this.tokens.set(token, { expiry: Date.now() + TOKEN_TTL_MS, ...(clientId === staticClientId ? {} : { clientId }) });
+    this.tokens.set(token, {
+      expiry: Date.now() + TOKEN_TTL_MS,
+      ...(clientId === staticClientId ? {} : { clientId }),
+      ...(withheldScopes.length ? { withheldScopes } : {}),
+    });
     if (!this.save()) {
       if (previous) this.tokens.set(token, previous);
       else this.tokens.delete(token);
@@ -412,6 +457,19 @@ export function createAuth(config: AuthConfig): Auth {
   const passwordGate = approvalPassword !== undefined;
   const approvalPrompt = config.approvalPrompt ?? 'Allow this client to access the MCP server?';
   const testMode = config.testMode === true;
+  const scopes = config.scopes ?? [];
+  const scopeIds = scopes.map((s) => s.id);
+  const scopesPrompt = config.scopesPrompt ?? 'Also allow this connection to:';
+
+  // Scope ids travel in space-separated OAuth scope strings and persist in the token store, so a
+  // malformed or duplicate id is a config error caught at startup.
+  for (const id of scopeIds) {
+    if (!/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(id)) throw new Error(`scope id "${id}" must be a non-empty OAuth scope token (no spaces, quotes or backslashes)`);
+  }
+  if (new Set(scopeIds).size !== scopeIds.length) throw new Error('scope ids must be unique');
+  const unknownBearerScope = config.staticBearerScopes?.find((id) => !scopeIds.includes(id));
+  if (unknownBearerScope !== undefined) throw new Error(`staticBearerScopes names "${unknownBearerScope}", which is not a declared scope`);
+  const staticBearerScopes = config.staticBearerScopes ? scopeIds.filter((id) => config.staticBearerScopes!.includes(id)) : scopeIds;
 
   // Refuse to construct with /authorize unguarded: a stranger who reached it could otherwise approve
   // their own client and gain access. Any one guard satisfies it — an approval password, a client
@@ -516,11 +574,42 @@ export function createAuth(config: AuthConfig): Auth {
     };
   }
 
+  // Every declared scope except the withheld ones. Withheld ids that are no longer declared are
+  // ignored, and a scope declared after the token was issued counts as granted.
+  function grantedScopes(withheld: readonly string[]): string[] {
+    return scopeIds.filter((id) => !withheld.includes(id));
+  }
+
   function passwordValid(password: string): boolean {
     return constantTimeEqual(password, approvalPassword ?? '');
   }
 
-  function renderApprovalPage(inputsHtml: string, opts: { error?: string; requester?: string } = {}): string {
+  // The scopes offered right now, in declaration order.
+  async function offeredScopes(): Promise<ScopeDefinition[]> {
+    const offered = await Promise.all(scopes.map(async (s) => (s.offered ? s.offered() : true)));
+    return scopes.filter((_, i) => offered[i]);
+  }
+
+  function renderScopes(offered: ScopeDefinition[], ticked: ReadonlySet<string>): string {
+    if (!offered.length) return '';
+    const rows = offered
+      .map((s) => {
+        const hint = s.hint ? `<small>${escapeHtml(s.hint)}</small>` : '';
+        const checked = ticked.has(s.id) ? ' checked' : '';
+        return `<label class="scope"><input type="checkbox" name="grant" value="${escapeHtml(s.id)}"${checked}><span>${escapeHtml(s.label)}${hint}</span></label>`;
+      })
+      .join('\n      ');
+    return `<fieldset class="access">
+      <legend>${escapeHtml(scopesPrompt)}</legend>
+      ${rows}
+      <p class="note">To change this later, connect again and approve with different choices.</p>
+    </fieldset>`;
+  }
+
+  function renderApprovalPage(
+    inputsHtml: string,
+    opts: { error?: string; requester?: string; scopesHtml?: string } = {},
+  ): string {
     const errorHtml = opts.error ? `<p style="color:#b00">${escapeHtml(opts.error)}</p>` : '';
     const requesterHtml = opts.requester
       ? `<p style="color:#111;margin-bottom:1rem">Request from <strong>${escapeHtml(opts.requester)}</strong></p>`
@@ -539,8 +628,14 @@ export function createAuth(config: AuthConfig): Auth {
     h1     { font-size: 1.25rem; margin-bottom: 0.5rem; }
     p      { color: #555; margin-bottom: 1.5rem; }
     label  { color: #111; }
-    input  { width: 100%; padding: 0.4rem; font-size: 1rem; margin-top: 0.25rem; box-sizing: border-box; }
+    input[type=password] { width: 100%; padding: 0.4rem; font-size: 1rem; margin-top: 0.25rem; box-sizing: border-box; }
     button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; }
+    .access { border: 0; padding: 0; margin: 0 0 1.25rem; }
+    .access legend { padding: 0; margin-bottom: 0.5rem; color: #111; }
+    .scope { display: flex; gap: 0.6rem; align-items: flex-start; margin: 0.6rem 0; cursor: pointer; }
+    .scope input { margin: 0.2rem 0 0; flex: none; }
+    .scope small { display: block; color: #555; margin-top: 0.15rem; font-size: 0.875rem; }
+    .access .note { font-size: 0.875rem; margin: 0.75rem 0 0; }
   </style>
 </head>
 <body>
@@ -550,6 +645,7 @@ export function createAuth(config: AuthConfig): Auth {
   ${errorHtml}
   <form method="POST" action="/authorize">
     ${inputsHtml}
+    ${opts.scopesHtml ?? ''}
     ${credentialFields}
     <button type="submit">Approve</button>
   </form>
@@ -577,6 +673,8 @@ export function createAuth(config: AuthConfig): Auth {
         ['code_challenge', params.codeChallenge],
         ['code_challenge_method', 'S256'],
         ['state', params.state],
+        // The client's own scope request rides along so a re-rendered page starts from it again.
+        ['scope', params.scopes?.length ? params.scopes.join(' ') : undefined],
       ]
         .filter((e): e is [string, string] => e[1] !== undefined)
         .map(([n, v]) => `<input type="hidden" name="${n}" value="${escapeHtml(v)}">`)
@@ -585,17 +683,27 @@ export function createAuth(config: AuthConfig): Auth {
       // Shown on the approval page so the operator can see which client and callback host they are
       // approving — the visible check that matters most once /register is open to public clients.
       const requester = describeRequester(client, params.redirectUri);
+      const offered = await offeredScopes();
 
       if (req.method === 'GET') {
-        res.type('html').send(renderApprovalPage(hidden, { requester }));
+        // Every offered box starts ticked, unless the client asked for specific declared scopes, in
+        // which case the page starts from that request. The person approving has the final say.
+        const requested = (params.scopes ?? []).filter((id) => scopeIds.includes(id));
+        const ticked = new Set(requested.length ? requested : offered.map((s) => s.id));
+        res.type('html').send(renderApprovalPage(hidden, { requester, scopesHtml: renderScopes(offered, ticked) }));
         return;
       }
 
-      // POST — the approval form was submitted.
+      // POST — the approval form was submitted. Checkboxes post only when ticked.
+      const grantField = (body as Record<string, unknown>).grant;
+      const granted = new Set((Array.isArray(grantField) ? grantField : [grantField]).filter((v): v is string => typeof v === 'string'));
       if (passwordGate && !passwordValid((body.password ?? '').toString())) {
-        res.status(401).type('html').send(renderApprovalPage(hidden, { error: 'Incorrect password.', requester }));
+        res.status(401).type('html').send(
+          renderApprovalPage(hidden, { error: 'Incorrect password.', requester, scopesHtml: renderScopes(offered, granted) }),
+        );
         return;
       }
+      const withheldScopes = offered.map((s) => s.id).filter((id) => !granted.has(id));
 
       const code = randomUUID();
       store.putCode(code, {
@@ -603,6 +711,7 @@ export function createAuth(config: AuthConfig): Auth {
         clientId: client.client_id,
         redirectUri: params.redirectUri,
         expiresAt: Date.now() + CODE_TTL_MS,
+        withheldScopes,
       });
       const url = new URL(params.redirectUri);
       url.searchParams.set('code', code);
@@ -630,8 +739,14 @@ export function createAuth(config: AuthConfig): Auth {
       if (client.client_id !== pending.clientId || redirectUri !== pending.redirectUri) {
         throw new InvalidGrantError('client_id or redirect_uri mismatch');
       }
-      const token = store.issueToken(client.client_id, staticClient.client_id);
-      return { access_token: token, token_type: 'bearer', expires_in: TOKEN_TTL_MS / 1000 } as OAuthTokens;
+      const token = store.issueToken(client.client_id, staticClient.client_id, pending.withheldScopes);
+      const granted = grantedScopes(pending.withheldScopes);
+      return {
+        access_token: token,
+        token_type: 'bearer',
+        expires_in: TOKEN_TTL_MS / 1000,
+        ...(scopeIds.length ? { scope: granted.join(' ') } : {}),
+      } as OAuthTokens;
     },
 
     // Refresh tokens are intentionally not issued or accepted: tokens live 30 days and clients
@@ -646,7 +761,7 @@ export function createAuth(config: AuthConfig): Auth {
         return {
           token,
           clientId: STATIC_BEARER_CLIENT_ID,
-          scopes: [],
+          scopes: [...staticBearerScopes],
           expiresAt: Math.floor((Date.now() + TOKEN_TTL_MS) / 1000),
           extra: callerExtra('bearer'),
         };
@@ -654,15 +769,16 @@ export function createAuth(config: AuthConfig): Auth {
       const record = store.tokenRecord(token);
       if (record !== undefined) {
         const expiresAt = Math.floor(record.expiry / 1000);
+        const scopes = grantedScopes(record.withheldScopes ?? []);
         if (record.clientId) {
           const dynamicClient = store.getClient(record.clientId);
           if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
             throw new InvalidTokenError('invalid or expired access token');
           }
           const clientName = (dynamicClient as { client_name?: string }).client_name?.trim() || undefined;
-          return { token, clientId: record.clientId, scopes: [], expiresAt, extra: callerExtra('dynamic', clientName) };
+          return { token, clientId: record.clientId, scopes, expiresAt, extra: callerExtra('dynamic', clientName) };
         }
-        return { token, clientId: staticClient.client_id, scopes: [], expiresAt, extra: callerExtra('static') };
+        return { token, clientId: staticClient.client_id, scopes, expiresAt, extra: callerExtra('static') };
       }
       // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
       throw new InvalidTokenError('invalid or expired access token');

@@ -236,6 +236,31 @@ The password gate is the standard built-in approval path. Set `approvalPassword`
 | Explicit external guard | `approvalOpen: true` | Click-to-approve with no password or secret; declares that an external gateway (reverse proxy, zero-trust layer) already guards `/authorize`. |
 | Client-secret guard | `clientSecret` (no password) | The approval page is click-to-approve, but token exchange requires the secret via `client_secret_post`, so a code alone is useless. |
 
+### Let people choose each connection's access
+
+Declare `scopes` to let the person approving a connection grant or withhold permissions for it. Each offered scope is a checkbox on the approval page, ticked by default, so approving without changes keeps full access. Scopes left unticked are withheld from that connection's token for its lifetime, and each request reports what was granted in `caller.scopes`. Your tools decide what each scope allows.
+
+```ts
+const auth = createAuth({
+  // …
+  scopesPrompt: 'Every connection can read your notes. Also allow this one to:',
+  scopes: [
+    { id: 'notes:write', label: 'Edit notes', hint: 'Create, edit and delete notes.' },
+    { id: 'app:control', label: 'Control the app', offered: () => appControlEnabled() },
+  ],
+});
+```
+
+Write each label as what the box adds beyond what every connection can already do, and use `scopesPrompt` to say what that baseline is. "Edit notes" under "Every connection can read your notes" is clear; "Allow commands" on a server whose whole purpose is commands is not.
+
+How grants behave:
+
+- `offered` hides a checkbox while your app has that capability switched off. A scope that was not offered when a connection was approved counts as granted, so switching a capability on later reaches existing connections without reconnecting them. Your app's own setting stays the limit.
+- Tokens issued before you declared scopes, or before you added a scope, count as having it. Declaring scopes never takes access away from an existing connection.
+- If a client asks for declared scopes in its authorization request, the page starts with only those ticked. Undeclared scopes in a request are ignored and are never granted.
+- To change a connection's access, the person connects again and approves with different choices.
+- Requests using `staticBearerToken` get `staticBearerScopes`, or every declared scope when that is unset.
+
 ### OAuth details to know
 
 The SDK sets the OAuth endpoint paths. The token endpoint is `/token`, not `/oauth/token`; discovery is served at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
@@ -260,6 +285,9 @@ Two SDK metadata details are fixed upstream:
 | `approvalPassword` | `string?` | Enables the password gate. |
 | `approvalOpen` | `boolean?` | Declares `/authorize` externally guarded. |
 | `approvalPrompt` | `string?` | Body text on the approval page. |
+| `scopes` | `ScopeDefinition[]?` | Permissions offered as checkboxes on the approval page: `{ id, label, hint?, offered? }`. See [Let people choose each connection's access](#let-people-choose-each-connections-access). |
+| `scopesPrompt` | `string?` | Line above the checkboxes. Defaults to "Also allow this connection to:". |
+| `staticBearerScopes` | `string[]?` | Scopes granted to `staticBearerToken` requests. Defaults to every declared scope. |
 | `testMode` | `boolean?` | Skips the disk load at construction and enables `seedTestToken()`. |
 | `disableRateLimit` | `boolean?` | Turns off the SDK's per-endpoint rate limiting (on by default). |
 

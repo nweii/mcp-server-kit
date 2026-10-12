@@ -7,8 +7,8 @@ import { mkdirSync } from 'fs';
 import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createApp, createAuth } from '../src/index.js';
-import type { AuthConfig, RegisterTools } from '../src/index.js';
+import { createApp, createAuth, currentCaller, textResult } from '../src/index.js';
+import type { AuthConfig, Caller, RegisterTools } from '../src/index.js';
 
 export const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
 export const open: Server[] = [];
@@ -171,4 +171,41 @@ export async function issueRegisteredToken(base: string, clientId: string, redir
   });
   expect(token.status).toBe(200);
   return ((await token.json()) as { access_token: string }).access_token;
+}
+
+// A server whose registerTools records the caller it was given, and whose one tool reports the
+// caller its handler sees.
+export async function recordingServer(overrides: Parameters<typeof standup>[0] = {}) {
+  const registered: (Caller | undefined)[] = [];
+  const registerTools: RegisterTools = (server, caller) => {
+    registered.push(caller);
+    server.registerTool('whoami', { description: 'Reports the caller' }, async () => textResult(JSON.stringify(currentCaller() ?? null)));
+  };
+  const base = await standup(overrides, registerTools);
+  return { base, registered };
+}
+
+export async function callWhoami(base: string, token: string): Promise<Caller> {
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2025-06-18',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } }),
+  });
+  expect(res.status).toBe(200);
+  const text = await res.text();
+  const line = text.split('\n').find((l) => l.startsWith('data: '));
+  const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: { text: string }[] } };
+  return JSON.parse(rpc.result.content[0]!.text) as Caller;
+}
+
+export async function staticClientToken(base: string): Promise<string> {
+  const { verifier, challenge } = pkce();
+  const approval = await approve(base, challenge, { password: 'sekret' });
+  const res = await exchange(base, approval.code!, verifier);
+  return ((await res.json()) as { access_token: string }).access_token;
 }
