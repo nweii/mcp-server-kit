@@ -18,10 +18,10 @@
     "fixture": "bun run fixture/server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
-    "@modelcontextprotocol/server-legacy": "^2.0.0",
-    "express": "^4.21.2"
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@modelcontextprotocol/server-legacy": "^2.3.1",
+    "express": "^4.22.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",

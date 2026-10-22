@@ -39,9 +39,15 @@ export interface CreateAppOptions {
   // Optional liveness probe run on an authorized /health request. Throwing marks the server
   // unhealthy (503); returning normally reports healthy (200).
   healthProbe?: () => void | Promise<void>;
+  // Largest combined count of array elements and object members a tools/call `arguments`
+  // payload may hold before the SDK rejects it, bounding validation work per request.
+  // Defaults to DEFAULT_MAX_TOOL_INPUT_ELEMENTS; pass Infinity to disable.
+  maxToolInputElements?: number;
   // When true, suppresses the per-request console log line (keeps test output quiet).
   testMode?: boolean;
 }
+
+const DEFAULT_MAX_TOOL_INPUT_ELEMENTS = 10_000;
 
 function ts(): string {
   return new Date().toISOString();
@@ -172,7 +178,10 @@ export function createApp(opts: CreateAppOptions): Express {
 
   const mcpHandler = createMcpHandler(
     async () => {
-      const server = new McpServer({ name: opts.name, version: opts.version });
+      const server = new McpServer(
+        { name: opts.name, version: opts.version },
+        { maxToolInputElements: opts.maxToolInputElements ?? DEFAULT_MAX_TOOL_INPUT_ELEMENTS },
+      );
       await opts.registerTools(server, currentCaller());
       return server;
     },
