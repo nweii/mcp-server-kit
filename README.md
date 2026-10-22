@@ -97,6 +97,7 @@ bun run fixture/server.ts
 | `healthToken` | `string?` | Bearer for `/health`; omit to return `404`. |
 | `corsOrigins` | `string[] \| null?` | Allowed origins; omit or `null` for `*`. |
 | `healthProbe` | `() => void \| Promise<void>?` | Optional liveness check; throwing yields `503`. |
+| `maxToolInputElements` | `number?` | Most array elements plus object members a `tools/call` `arguments` payload may hold; a larger payload gets a tool result with `isError: true` and the tool handler never runs. Defaults to `10000`; `Infinity` disables the limit. |
 | `testMode` | `boolean?` | Suppresses per-request console logging. |
 
 ## Result helpers

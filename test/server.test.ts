@@ -242,6 +242,34 @@ test('errorResult comes back as isError with the message text', async () => {
   expect(body.result.content[0].text).toContain('boom requested');
 });
 
+test('tools/call rejects arguments over the default element limit', async () => {
+  const base = await listen(createFixtureApp().app);
+  const res = await mcp(base, FIXTURE_TOKEN, {
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/call',
+    params: { name: 'echo', arguments: { message: 'hi', padding: new Array(10_001).fill(0) } },
+  });
+  const body = parseRpc(await res.text());
+  expect(body.result?.isError).toBe(true);
+  expect(body.result?.content?.[0]?.text).toContain('more than the maximum of 10000 elements');
+});
+
+test('createApp rejects a maxToolInputElements below 1 at startup', () => {
+  for (const bad of [0, -1, Number.NaN]) {
+    expect(() =>
+      createApp({
+        name: 'limit-fixture',
+        version: '0.0.0',
+        authMiddleware: passThrough as never,
+        registerTools: () => {},
+        testMode: true,
+        maxToolInputElements: bad,
+      }),
+    ).toThrow(RangeError);
+  }
+});
+
 // --- CORS --------------------------------------------------------------------
 
 test('default CORS allows any origin', async () => {

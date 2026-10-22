@@ -39,9 +39,15 @@ export interface CreateAppOptions {
   // Optional liveness probe run on an authorized /health request. Throwing marks the server
   // unhealthy (503); returning normally reports healthy (200).
   healthProbe?: () => void | Promise<void>;
+  // Largest combined count of array elements and object members a tools/call `arguments`
+  // payload may hold before the SDK rejects it, bounding validation work per request.
+  // Defaults to DEFAULT_MAX_TOOL_INPUT_ELEMENTS; pass Infinity to disable.
+  maxToolInputElements?: number;
   // When true, suppresses the per-request console log line (keeps test output quiet).
   testMode?: boolean;
 }
+
+const DEFAULT_MAX_TOOL_INPUT_ELEMENTS = 10_000;
 
 function ts(): string {
   return new Date().toISOString();
@@ -137,6 +143,11 @@ export function createApp(opts: CreateAppOptions): Express {
   if (!authMiddleware) {
     throw new Error('createApp requires either an `auth` module or an `authMiddleware` to guard /mcp');
   }
+  // Checked here so a bad value fails at startup instead of on every /mcp request.
+  const maxToolInputElements = opts.maxToolInputElements ?? DEFAULT_MAX_TOOL_INPUT_ELEMENTS;
+  if (!(maxToolInputElements >= 1)) {
+    throw new RangeError(`maxToolInputElements must be at least 1 or Infinity, got ${String(maxToolInputElements)}`);
+  }
 
   const app = express();
   const allowedOrigins = opts.corsOrigins ?? null;
@@ -172,7 +183,10 @@ export function createApp(opts: CreateAppOptions): Express {
 
   const mcpHandler = createMcpHandler(
     async () => {
-      const server = new McpServer({ name: opts.name, version: opts.version });
+      const server = new McpServer(
+        { name: opts.name, version: opts.version },
+        { maxToolInputElements },
+      );
       await opts.registerTools(server, currentCaller());
       return server;
     },
