@@ -250,9 +250,9 @@ test('tools/call rejects arguments over the default element limit', async () => 
     method: 'tools/call',
     params: { name: 'echo', arguments: { message: 'hi', padding: new Array(10_001).fill(0) } },
   });
-  const text = await res.text();
-  expect(text).toContain('more than the maximum of 10000 elements');
-  expect(text).not.toContain('"echoed"');
+  const body = parseRpc(await res.text());
+  expect(body.result?.isError).toBe(true);
+  expect(body.result?.content?.[0]?.text).toContain('more than the maximum of 10000 elements');
 });
 
 test('createApp rejects a maxToolInputElements below 1 at startup', () => {
