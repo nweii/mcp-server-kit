@@ -255,6 +255,21 @@ test('tools/call rejects arguments over the default element limit', async () => 
   expect(text).not.toContain('"echoed"');
 });
 
+test('createApp rejects a maxToolInputElements below 1 at startup', () => {
+  for (const bad of [0, -1, Number.NaN]) {
+    expect(() =>
+      createApp({
+        name: 'limit-fixture',
+        version: '0.0.0',
+        authMiddleware: passThrough as never,
+        registerTools: () => {},
+        testMode: true,
+        maxToolInputElements: bad,
+      }),
+    ).toThrow(RangeError);
+  }
+});
+
 // --- CORS --------------------------------------------------------------------
 
 test('default CORS allows any origin', async () => {
