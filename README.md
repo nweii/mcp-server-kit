@@ -122,7 +122,7 @@ The module wraps the MCP TypeScript SDK's `mcpAuthRouter` and `requireBearerAuth
 | Dynamic Client Registration (DCR) | `dynamicClientRegistration` | The client can register its own public OAuth client, such as ChatGPT desktop or Codex. |
 | Static bearer | `staticBearerToken` | A client can send a shared `Authorization` header but cannot use OAuth. |
 
-You can enable the first two together. A request is accepted when its bearer token came from a valid OAuth flow or matches `staticBearerToken`.
+Configure `clientId`, `dynamicClientRegistration`, or both; `createAuth` refuses to start with neither. A request is accepted when its bearer token came from a valid OAuth flow or matches `staticBearerToken`.
 
 ### Start with a pre-registered client
 
@@ -165,13 +165,14 @@ DCR requires `approvalPassword`. With open registration that password is the gat
 ```ts
 const auth = createAuth({
   baseUrl: 'https://mcp.example.com',
-  clientId: 'existing-client',
   displayName: 'my-mcp',
   tokenStorePath: './tokens.json',
   approvalPassword: process.env.APPROVAL_PASSWORD,
   dynamicClientRegistration: {}, // open registration; the approval password is the gate
 });
 ```
+
+Without `clientId`, registered clients are the only OAuth clients. Add `clientId` to also accept one pre-registered client beside them. `clientSecret` and `allowedRedirectUris` describe that pre-registered client, so they require `clientId`.
 
 When enabled, the SDK publishes `/register` in authorization-server metadata. It accepts only public clients (`token_endpoint_auth_method: 'none'`) using the authorization-code grant and `code` response type. By default a client's own declared redirect URIs are accepted (plaintext `http` is refused except on loopback), and the SDK matches them exactly against that client at `/authorize` — the per-client validation OAuth 2.1 requires. This is how DCR is meant to work: the operator does not maintain a list of clients' callback URLs.
 
@@ -276,11 +277,11 @@ Two SDK metadata details are fixed upstream:
 | Field | Type | Notes |
 | --- | --- | --- |
 | `baseUrl` | `string` | Public base URL, baked into the discovery documents and the `WWW-Authenticate` hint at construction (the SDK resolves it once, not live per request). |
-| `clientId` | `string` | The single pre-registered OAuth client ID. Required even when DCR is enabled. |
+| `clientId` | `string?` | The one pre-registered OAuth client ID. Optional when `dynamicClientRegistration` is set; at least one of the two is required. |
 | `displayName` | `string` | Shown on the approval page ("Authorize \<displayName>") and as the protected-resource name. |
 | `tokenStorePath` | `string` | File the issued tokens persist to; read at construction (unless `testMode`) and rewritten on each issuance and `saveTokens()`. |
-| `clientSecret` | `string?` | Enables the client-secret guard (see above). |
-| `allowedRedirectUris` | `string[]?` | Redirect URIs for the pre-registered client only. Defaults to `DEFAULT_ALLOWED_REDIRECT_URIS`. |
+| `clientSecret` | `string?` | Enables the client-secret guard (see above). Requires `clientId`. |
+| `allowedRedirectUris` | `string[]?` | Redirect URIs for the pre-registered client only. Requires `clientId`. Defaults to `DEFAULT_ALLOWED_REDIRECT_URIS`. |
 | `dynamicClientRegistration` | `{ allowedRedirectUris?: string[] }?` | Enables public-client DCR at `/register`; requires `approvalPassword`. Pass `{}` for open registration (clients' own declared redirects, matched per-client at `/authorize`). Set `allowedRedirectUris` only to restrict which redirects may register — exact, loopback (any port), or host-scoped `https://host/*`. |
 | `staticBearerToken` | `string?` | A fixed bearer accepted on `/mcp` in addition to issued OAuth tokens. Use only for clients that cannot use OAuth. |
 | `approvalPassword` | `string?` | Enables the password gate. |
@@ -289,7 +290,7 @@ Two SDK metadata details are fixed upstream:
 | `scopes` | `ScopeDefinition[]?` | Permissions offered as checkboxes on the approval page: `{ id, label, hint?, offered? }`. See [Let people choose each connection's access](#let-people-choose-each-connections-access). |
 | `scopesPrompt` | `string?` | Line above the checkboxes. Defaults to "Also allow this connection to:". |
 | `staticBearerScopes` | `string[]?` | Scopes granted to `staticBearerToken` requests. Defaults to every declared scope. |
-| `testMode` | `boolean?` | Skips the disk load at construction and enables `seedTestToken()`. |
+| `testMode` | `boolean?` | Skips the disk load at construction and enables `seedTestToken()`, which seeds a pre-registered client token and so needs `clientId`. |
 | `disableRateLimit` | `boolean?` | Turns off the SDK's per-endpoint rate limiting (on by default). |
 
 The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, `listDynamicClients()`, `revokeDynamicClient()`, `clearDynamicClients()`, and `seedTestToken()` (test-mode only).
