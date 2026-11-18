@@ -15,8 +15,8 @@ import type { Caller } from './caller.js';
 // Registers the server's tools onto a fresh McpServer. Called once per POST /mcp request, so a
 // slow or async registration (reading a store, awaiting I/O) is supported, and so the tool set can
 // differ by caller. `caller` is the verified client making the request (also available anywhere in
-// the request through currentCaller()); it is undefined when /mcp is guarded by a bare
-// authMiddleware rather than the kit's auth module.
+// the request through currentCaller()); it is undefined when /mcp is guarded by an authMiddleware
+// other than createAccessAuth.
 export type RegisterTools = (server: McpServer, caller: Caller | undefined) => void | Promise<void>;
 
 export interface CreateAppOptions {

@@ -3,6 +3,8 @@
 export { createApp } from './app.js';
 export type { CreateAppOptions, RegisterTools } from './app.js';
 export { createAuth, DEFAULT_ALLOWED_REDIRECT_URIS, STATIC_BEARER_CLIENT_ID } from './auth.js';
+export { createAccessAuth, ACCESS_JWT_HEADER } from './access.js';
+export type { AccessAuthConfig } from './access.js';
 export { currentCaller, runAsCaller } from './caller.js';
 export type { Caller, CallerKind } from './caller.js';
 export type { Auth, AuthConfig, DynamicClientRegistrationConfig, ScopeDefinition } from './auth.js';

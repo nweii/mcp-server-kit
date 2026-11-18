@@ -2,7 +2,7 @@
 
 MCP ServerKit standardizes recurring server plumbing for long-lived Bun + Express [MCP](https://modelcontextprotocol.io) services, usually running in Docker behind a reverse proxy. It serves modern and legacy stateless Streamable HTTP at `/mcp` around your tool-registration function, with CORS, request logging, a bearer-gated health endpoint, result helpers, optional OAuth and audit logging, and process startup/shutdown.
 
-Use `createApp` with your own `authMiddleware` when you already have an authentication layer. Use `createAuth` when this server should issue and verify OAuth access tokens itself.
+Use `createApp` with your own `authMiddleware` when you already have an authentication layer. Use `createAuth` when this server should issue and verify OAuth access tokens itself. Use `createAccessAuth` when the server sits behind a Cloudflare Access application with Managed OAuth, so Access runs sign-in and the server only checks who Access let through.
 
 ## When to use it
 
@@ -203,9 +203,10 @@ Every `/mcp` request runs as its caller: the client behind the bearer token. `re
 
 | Field | Notes |
 | --- | --- |
-| `clientId` | The pre-registered client's id, a registered client's generated id, or `static-bearer`. |
+| `clientId` | The pre-registered client's id, a registered client's generated id, or `static-bearer`. Behind Access, the client Access registered for the connection, or the user's email for a request without one. |
 | `clientName` | The name a registered client declared for itself. Self-asserted, so show it to people but don't base decisions on it. |
-| `kind` | `'static'` (pre-registered client), `'dynamic'` (registered through DCR) or `'bearer'` (static bearer token). |
+| `kind` | `'static'` (pre-registered client), `'dynamic'` (registered through DCR), `'bearer'` (static bearer token) or `'access'` (signed in through Cloudflare Access). |
+| `email`, `userId` | Behind Access only: the signed-in user's email and the stable id Access assigns them. |
 | `scopes` | The scopes the connection was granted. |
 
 Because registration runs per request, the tool set can differ by caller. `runAsCaller(caller, fn)` runs `fn` as a given caller, for tests that exercise per-caller behavior without an HTTP round trip.
@@ -294,6 +295,40 @@ Two SDK metadata details are fixed upstream:
 | `disableRateLimit` | `boolean?` | Turns off the SDK's per-endpoint rate limiting (on by default). |
 
 The returned `Auth` exposes `authMiddleware`, `routes`, `saveTokens()`, `listDynamicClients()`, `revokeDynamicClient()`, `clearDynamicClients()`, and `seedTestToken()` (test-mode only).
+
+## Behind Cloudflare Access
+
+`createAccessAuth(config)` returns middleware for `createApp`'s `authMiddleware`, for a server behind a [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/) application with [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) turned on. Access becomes the OAuth server: it registers MCP clients, signs the user in, issues and refreshes tokens, and applies your Access policies. The MCP server keeps no token store, approval page, or password.
+
+On each request Access lets through, it replaces the client's token with a signed JWT in the `Cf-Access-Jwt-Assertion` header. The middleware verifies that JWT's RS256 signature against the team's published keys, its issuer, its audience tag, and its expiry, then runs the request as an `'access'` caller (see [Know who is calling](#know-who-is-calling)). A request with a missing or invalid JWT gets `403`: it did not come through Access, so the middleware never answers with an OAuth challenge of its own.
+
+```ts
+import { createAccessAuth, createApp, startServer } from 'mcp-server-kit';
+
+const app = createApp({
+  name: 'my-mcp',
+  version: '1.0.0',
+  authMiddleware: createAccessAuth({
+    teamDomain: 'myteam.cloudflareaccess.com',
+    audience: process.env.ACCESS_AUD!, // the application's audience (AUD) tag
+    scopes: ['notes:write'],           // what every signed-in user holds; defaults to none
+  }),
+  registerTools(server, caller) {
+    // caller.email is the signed-in user; caller.clientId is their connection.
+  },
+});
+
+startServer({ app, port: 3000 });
+```
+
+Set up the Access application to cover the whole hostname, with Managed OAuth on, dynamic client registration allowed for your clients' redirect URIs (for claude.ai, `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`), a short access token lifetime, and a longer grant session duration. Revoke a connection from the Access dashboard.
+
+Things to know:
+
+- **Scopes are per server, not per connection.** Access grants no scopes, so `scopes` applies to every signed-in user. A server that offered per-connection choices on the kit's approval page moves them to server configuration.
+- **Other routes on the host are behind Access too.** A settings page served by the same app is protected by the same policy without code of its own. `/health` keeps its own bearer token, so an uptime monitor needs an Access service token or a bypass policy on `/health`.
+- **Keys are cached.** The team's signing keys are fetched on first use and refetched when a token names an unknown key, at most once a minute.
+- **Service tokens are refused.** A JWT without an email is a machine, not a person, so it has no caller identity here.
 
 ## Audit logging
 
