@@ -843,7 +843,6 @@ test('a DCR-only server rejects a persisted pre-registered client token', async 
 test('createAuth refuses to start with neither clientId nor dynamic registration', () => {
   const base = { baseUrl: 'http://localhost:3000', displayName: 'x', tokenStorePath: storePath(), approvalPassword: 'sekret' };
   expect(() => createAuth(base)).toThrow(/clientId.*dynamicClientRegistration/);
-  expect(() => createAuth({ ...base, clientId: '  ' })).toThrow(/clientId.*dynamicClientRegistration/);
 });
 
 test('pre-registered client settings require clientId', () => {

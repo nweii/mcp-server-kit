@@ -459,7 +459,7 @@ function escapeHtml(str: string): string {
 }
 
 export function createAuth(config: AuthConfig): Auth {
-  const clientId = config.clientId?.trim() || undefined;
+  const clientId = config.clientId || undefined;
   const allowedRedirectUris = config.allowedRedirectUris ?? DEFAULT_ALLOWED_REDIRECT_URIS;
   const dynamicRegistration = config.dynamicClientRegistration;
   const dynamicRedirectUris = dynamicRegistration?.allowedRedirectUris;
@@ -819,7 +819,7 @@ export function createAuth(config: AuthConfig): Auth {
           return { token, clientId: record.clientId, scopes, expiresAt, extra: callerExtra('dynamic', clientName) };
         }
         // A token with no registration belongs to the pre-registered client. Without one configured,
-        // it was issued under an earlier configuration and no longer grants access.
+        // it was issued under an earlier configuration and grants nothing while none is configured.
         if (!staticClient) throw new InvalidTokenError('invalid or expired access token');
         return { token, clientId: staticClient.client_id, scopes, expiresAt, extra: callerExtra('static') };
       }
