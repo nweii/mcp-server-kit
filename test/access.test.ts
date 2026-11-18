@@ -140,6 +140,14 @@ test('requests that did not come through Access are refused', async () => {
   }
 });
 
+test('requests arriving while keys are being fetched share the fetch', async () => {
+  const team = await fakeTeam();
+  const base = await protectedServer(team.issuer);
+  const responses = await Promise.all([1, 2, 3].map(() => callWhoami(base, team.mint())));
+  expect(responses.map((r) => r.status)).toEqual([200, 200, 200]);
+  expect(team.certFetches()).toBe(1);
+});
+
 test('unknown key ids do not refetch keys within a minute of the last fetch', async () => {
   const team = await fakeTeam();
   const base = await protectedServer(team.issuer);

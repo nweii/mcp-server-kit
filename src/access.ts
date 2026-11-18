@@ -69,8 +69,9 @@ function makeKeyStore(certsUrl: string) {
   return async function keyFor(kid: string): Promise<KeyObject | undefined> {
     const known = keys.get(kid);
     if (known) return known;
-    if (Date.now() - lastFetch < MIN_REFETCH_MS) return undefined;
+    // Requests arriving during a fetch share it; the rate limit only applies to starting a new one.
     if (!inFlight) {
+      if (Date.now() - lastFetch < MIN_REFETCH_MS) return undefined;
       lastFetch = Date.now();
       inFlight = refresh().finally(() => {
         inFlight = undefined;
