@@ -45,17 +45,20 @@ export interface AuthConfig {
   // Public base URL of this server. Used as the SDK's issuer/base URL, so it is baked into the
   // discovery documents at construction (the SDK does not resolve it live per request).
   baseUrl: string;
-  // The single OAuth client_id this server accepts.
-  clientId: string;
+  // The one pre-registered OAuth client_id this server accepts. Optional when
+  // dynamicClientRegistration is set; at least one of the two is required.
+  clientId?: string;
   // Shown in the approval page title and heading ("Authorize <displayName>").
   displayName: string;
   // File the issued tokens persist to, so they survive a restart. Read at construction (unless
   // testMode) and rewritten on every issuance and on saveTokens().
   tokenStorePath: string;
-  // Optional client secret. When set, the SDK's token endpoint enforces it (a code alone cannot be
-  // exchanged). See the README on the discovery-metadata mismatch this creates.
+  // Optional secret for the pre-registered client. When set, the SDK's token endpoint enforces it (a
+  // code alone cannot be exchanged). Requires clientId. See the README on the discovery-metadata
+  // mismatch this creates.
   clientSecret?: string;
-  // Allowed OAuth redirect URIs. Defaults to DEFAULT_ALLOWED_REDIRECT_URIS.
+  // Redirect URIs for the pre-registered client. Requires clientId. Defaults to
+  // DEFAULT_ALLOWED_REDIRECT_URIS.
   allowedRedirectUris?: string[];
   // Opt-in dynamic client registration: opens /register so clients that can't be pre-configured (e.g.
   // ChatGPT) can register themselves, no per-client server config. Trust rests on the approval gate,
@@ -132,7 +135,8 @@ export interface Auth {
   // Permanently removes every DCR registration and all access tokens issued to them. Throws
   // without changing memory when the deletion cannot be persisted.
   clearDynamicClients(): { removedClientCount: number; revokedTokenCount: number };
-  // Inserts a valid opaque token and returns it. Throws unless testMode is set.
+  // Inserts a valid opaque token for the pre-registered client and returns it. Throws unless testMode
+  // is set and clientId is configured.
   seedTestToken(): string;
 }
 
@@ -264,14 +268,15 @@ class TokenStore {
     return p;
   }
 
+  // clientId is undefined for the pre-registered client and names the registration for a DCR client.
   // grantedScopes is undefined when the app declares no scopes.
-  issueToken(clientId: string, staticClientId: string, grantedScopes: string[] | undefined): string {
+  issueToken(clientId: string | undefined, grantedScopes: string[] | undefined): string {
     this.prune();
     const token = randomUUID();
     const previous = this.tokens.get(token);
     this.tokens.set(token, {
       expiry: Date.now() + TOKEN_TTL_MS,
-      ...(clientId === staticClientId ? {} : { clientId }),
+      ...(clientId ? { clientId } : {}),
       ...(grantedScopes ? { grantedScopes } : {}),
     });
     if (!this.save()) {
@@ -454,6 +459,7 @@ function escapeHtml(str: string): string {
 }
 
 export function createAuth(config: AuthConfig): Auth {
+  const clientId = config.clientId?.trim() || undefined;
   const allowedRedirectUris = config.allowedRedirectUris ?? DEFAULT_ALLOWED_REDIRECT_URIS;
   const dynamicRegistration = config.dynamicClientRegistration;
   const dynamicRedirectUris = dynamicRegistration?.allowedRedirectUris;
@@ -502,6 +508,19 @@ export function createAuth(config: AuthConfig): Auth {
     );
   }
 
+  // Without a pre-registered client, DCR is the only way to obtain a token, and the static client's
+  // own settings would describe nothing. A secret with no client to hold it would also satisfy the
+  // /authorize guard above while guarding nothing.
+  if (!clientId && !dynamicRegistration) {
+    throw new Error('Refusing to start: set clientId for a pre-registered OAuth client, dynamicClientRegistration to let clients register themselves, or both');
+  }
+  if (!clientId && clientSecret) {
+    throw new Error('clientSecret belongs to the pre-registered client: set clientId, or remove clientSecret');
+  }
+  if (!clientId && config.allowedRedirectUris) {
+    throw new Error('allowedRedirectUris belongs to the pre-registered client: set clientId, or use dynamicClientRegistration.allowedRedirectUris to restrict registered clients');
+  }
+
   // An operator allowlist is optional — open registration is the default. If one is provided, every
   // entry must be a valid URL (a "https://host/*" host-scoped pattern parses too); a malformed
   // allowlist is a config error, not a silent no-op that would quietly reject every real client.
@@ -520,14 +539,16 @@ export function createAuth(config: AuthConfig): Auth {
   // rejects them in that mode, but loading them prevents a routine save from erasing registrations
   // and lets a server owner revoke them deliberately through the Auth API.
   const store = new TokenStore(config.tokenStorePath, !testMode);
-  const staticClient: OAuthClientInformationFull = {
-    client_id: config.clientId,
-    client_secret: clientSecret,
-    redirect_uris: allowedRedirectUris,
-    token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
-    grant_types: ['authorization_code'],
-    response_types: ['code'],
-  } as OAuthClientInformationFull;
+  const staticClient: OAuthClientInformationFull | undefined = clientId
+    ? ({
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uris: allowedRedirectUris,
+        token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+      } as OAuthClientInformationFull)
+    : undefined;
 
   function unsafeDynamicClientReason(client: OAuthClientInformationFull): string | undefined {
     if (!dynamicRegistration) return 'Dynamic registration is disabled';
@@ -565,9 +586,9 @@ export function createAuth(config: AuthConfig): Auth {
   }
 
   const clientsStore: OAuthRegisteredClientsStore = {
-    getClient: (clientId: string): OAuthClientInformationFull | undefined => {
-      if (clientId === staticClient.client_id) return staticClient;
-      const client = store.getClient(clientId);
+    getClient: (id: string): OAuthClientInformationFull | undefined => {
+      if (staticClient && id === staticClient.client_id) return staticClient;
+      const client = store.getClient(id);
       return client && !unsafeDynamicClientReason(client) ? client : undefined;
     },
   };
@@ -757,7 +778,8 @@ export function createAuth(config: AuthConfig): Auth {
       if (client.client_id !== pending.clientId || redirectUri !== pending.redirectUri) {
         throw new InvalidGrantError('client_id or redirect_uri mismatch');
       }
-      const token = store.issueToken(client.client_id, staticClient.client_id, scopeIds.length ? pending.grantedScopes : undefined);
+      const registrationId = client.client_id === staticClient?.client_id ? undefined : client.client_id;
+      const token = store.issueToken(registrationId, scopeIds.length ? pending.grantedScopes : undefined);
       const granted = heldScopes(pending.grantedScopes);
       return {
         access_token: token,
@@ -796,6 +818,9 @@ export function createAuth(config: AuthConfig): Auth {
           const clientName = (dynamicClient as { client_name?: string }).client_name?.trim() || undefined;
           return { token, clientId: record.clientId, scopes, expiresAt, extra: callerExtra('dynamic', clientName) };
         }
+        // A token with no registration belongs to the pre-registered client. Without one configured,
+        // it was issued under an earlier configuration and no longer grants access.
+        if (!staticClient) throw new InvalidTokenError('invalid or expired access token');
         return { token, clientId: staticClient.client_id, scopes, expiresAt, extra: callerExtra('static') };
       }
       // Must be an InvalidTokenError (not a plain Error) so the SDK bearer middleware answers 401.
@@ -828,6 +853,7 @@ export function createAuth(config: AuthConfig): Auth {
     clearDynamicClients: () => store.clearClients(),
     seedTestToken: () => {
       if (!testMode) throw new Error('seedTestToken is only available when testMode is set');
+      if (!staticClient) throw new Error('seedTestToken issues a pre-registered client token, so it needs clientId');
       return store.seed();
     },
   };

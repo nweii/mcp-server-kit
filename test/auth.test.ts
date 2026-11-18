@@ -802,6 +802,68 @@ test('seedTestToken throws unless testMode is set, and seeds a token accepted on
   expect(res.status).toBe(405);
 });
 
+// --- DCR without a pre-registered client -------------------------------------
+
+test('a DCR-only server issues tokens to registered clients and knows no pre-registered client', async () => {
+  const redirectUri = 'com.example.mcp:/oauth/callback';
+  const base = await standup({ clientId: undefined, dynamicClientRegistration: {} });
+
+  const registration = await registerPublicClient(base, redirectUri);
+  expect(registration.res.status).toBe(201);
+  const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
+  const mcp = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } });
+  expect(mcp.status).toBe(405); // authenticated; GET /mcp is not served
+
+  const { challenge } = pkce();
+  const unknown = await fetch(
+    `${base}/authorize?response_type=code&client_id=test-client&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    { redirect: 'manual' },
+  );
+  expect(unknown.status).toBe(400);
+  expect(((await unknown.json()) as { error?: string }).error).toBe('invalid_client');
+});
+
+test('a DCR-only server rejects a persisted pre-registered client token', async () => {
+  const path = storePath();
+  const legacyToken = 'pre-registered-token';
+  await Bun.write(path, JSON.stringify({ [legacyToken]: Date.now() + 60_000 }));
+  const port = await freePort();
+  const { base } = await standupAt(port, {
+    baseUrl: `http://localhost:${port}`,
+    displayName: 'kit-auth-fixture',
+    tokenStorePath: path,
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: {},
+    disableRateLimit: true,
+  });
+  const res = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } });
+  expect(res.status).toBe(401);
+});
+
+test('createAuth refuses to start with neither clientId nor dynamic registration', () => {
+  const base = { baseUrl: 'http://localhost:3000', displayName: 'x', tokenStorePath: storePath(), approvalPassword: 'sekret' };
+  expect(() => createAuth(base)).toThrow(/clientId.*dynamicClientRegistration/);
+  expect(() => createAuth({ ...base, clientId: '  ' })).toThrow(/clientId.*dynamicClientRegistration/);
+});
+
+test('pre-registered client settings require clientId', () => {
+  const base = { baseUrl: 'http://localhost:3000', displayName: 'x', tokenStorePath: storePath(), approvalPassword: 'sekret', dynamicClientRegistration: {} };
+  expect(() => createAuth({ ...base, clientSecret: 'secret' })).toThrow(/clientSecret belongs to the pre-registered client/);
+  expect(() => createAuth({ ...base, allowedRedirectUris: [REDIRECT] })).toThrow(/allowedRedirectUris belongs to the pre-registered client/);
+});
+
+test('seedTestToken needs a pre-registered client', () => {
+  const auth = createAuth({
+    baseUrl: 'http://localhost:3000',
+    displayName: 'x',
+    tokenStorePath: storePath(),
+    approvalPassword: 'sekret',
+    dynamicClientRegistration: {},
+    testMode: true,
+  });
+  expect(() => auth.seedTestToken()).toThrow(/needs clientId/);
+});
+
 // --- Redirect-URI allowlist injection ----------------------------------------
 
 test('a custom redirect-URI allowlist replaces the default set', async () => {
