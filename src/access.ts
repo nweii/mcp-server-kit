@@ -1,7 +1,7 @@
 // ABOUTME: Auth middleware for a server behind a Cloudflare Access application with Managed OAuth:
 // Access runs the sign-in and token lifecycle, and this verifies the signed identity it forwards.
-import { createPublicKey, verify } from 'crypto';
-import type { JsonWebKey, KeyObject } from 'crypto';
+import { createPublicKey, verify } from 'node:crypto';
+import type { JsonWebKey, KeyObject } from 'node:crypto';
 import type { Request, RequestHandler } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 
@@ -13,7 +13,7 @@ export interface AccessAuthConfig {
   audience: string;
   // Scopes every Access caller holds. Access grants no scopes of its own, so a server that gates
   // tools by scope declares here what a signed-in user gets.
-  scopes?: string[];
+  scopes?: Array<string>;
 }
 
 // Header Access sets on every request it lets through to the origin.
@@ -44,7 +44,7 @@ function teamUrl(teamDomain: string): string {
 }
 
 function decodeSegment(segment: string): unknown {
-  return JSON.parse(Buffer.from(segment, 'base64url').toString('utf-8'));
+  return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
 }
 
 // Fetches the team's signing keys and keeps them, refetching when a token names a key id it hasn't
@@ -57,7 +57,9 @@ function makeKeyStore(certsUrl: string) {
   async function refresh(): Promise<void> {
     const res = await fetch(certsUrl);
     if (!res.ok) throw new Error(`fetching Access keys returned ${res.status}`);
-    const body = (await res.json()) as { keys?: (JsonWebKey & { kid?: string })[] };
+    // SAFETY: each key is checked for a string kid below, and createPublicKey rejects a malformed
+    // JWK; any throw fails the refresh, which fails the request closed.
+    const body = (await res.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
     const next = new Map<string, KeyObject>();
     for (const jwk of body.keys ?? []) {
       if (typeof jwk.kid !== 'string') continue;
@@ -87,15 +89,17 @@ async function verifyRequest(
   req: Request,
   issuer: string,
   audience: string,
-  scopes: string[],
+  scopes: Array<string>,
   keyFor: (kid: string) => Promise<KeyObject | undefined>,
 ): Promise<AuthInfo | undefined> {
   const jwt = req.headers[ACCESS_JWT_HEADER];
   if (typeof jwt !== 'string') return undefined;
   const parts = jwt.split('.');
   if (parts.length !== 3) return undefined;
+  // SAFETY: the length check above guarantees three segments.
   const [headerSegment, payloadSegment, signatureSegment] = parts as [string, string, string];
 
+  // SAFETY: both fields are typed unknown and checked on the next line.
   const header = decodeSegment(headerSegment) as { alg?: unknown; kid?: unknown };
   if (header.alg !== 'RS256' || typeof header.kid !== 'string') return undefined;
   const key = await keyFor(header.kid);
@@ -103,6 +107,7 @@ async function verifyRequest(
   const signed = Buffer.from(`${headerSegment}.${payloadSegment}`);
   if (!verify('RSA-SHA256', signed, key, Buffer.from(signatureSegment, 'base64url'))) return undefined;
 
+  // SAFETY: the signature is verified, and each claim used below is compared or type-checked before use.
   const claims = decodeSegment(payloadSegment) as AccessClaims;
   const now = Date.now() / 1000;
   if (claims.iss !== issuer) return undefined;
@@ -144,8 +149,10 @@ export function createAccessAuth(config: AccessAuthConfig): RequestHandler {
           res.status(403).json({ error: 'forbidden', error_description: 'Request did not come through Cloudflare Access' });
           return;
         }
+        // SAFETY: attaches the field the SDK's requireBearerAuth also sets, which the /mcp route reads.
         (req as Request & { auth?: AuthInfo }).auth = info;
         next();
-      });
+      })
+      .catch(next);
   };
 }

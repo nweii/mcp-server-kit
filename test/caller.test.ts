@@ -1,9 +1,9 @@
 // Caller identity over HTTP: each way of authenticating reaches registerTools, tool handlers and the
 // audit log as its own caller, and the static bearer token never borrows the configured client's id.
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createAuditLog, currentCaller, runAsCaller, STATIC_BEARER_CLIENT_ID } from '../src/index.js';
 import { callWhoami, closeAll, issueRegisteredToken, recordingServer, registerPublicClient, staticClientToken } from './helpers.js';
 
@@ -56,9 +56,9 @@ test('audit records name the caller when written during a request', () => {
     log.logToolCall({ tool: 'inside', args: {}, ok: true, duration_ms: 1 });
     log.logFeedback({ goal: 'g', attempted: 'a', stuck_on: 's' });
   });
-  const calls = readFileSync(join(dir, 'tool-calls.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  const calls = readFileSync(join(dir, 'tool-calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(calls[0].client).toBeUndefined();
   expect(calls[1]).toMatchObject({ client: 'abc', client_name: 'ChatGPT', tool: 'inside' });
-  const [feedback] = readFileSync(join(dir, 'feedback.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  const [feedback] = readFileSync(join(dir, 'feedback.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(feedback).toMatchObject({ client: 'abc', client_name: 'ChatGPT', goal: 'g' });
 });

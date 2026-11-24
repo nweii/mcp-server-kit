@@ -1,16 +1,16 @@
 // ABOUTME: createAccessAuth over HTTP: a request carrying a valid Access JWT runs as an 'access' caller,
 // and a missing, forged, expired, wrong-audience, or identity-less JWT is refused before /mcp.
 import { afterEach, expect, test } from 'bun:test';
-import { generateKeyPairSync, sign } from 'crypto';
-import type { KeyObject } from 'crypto';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
 import express from 'express';
-import type { Server } from 'http';
+import type { Server } from 'node:http';
 import { createAccessAuth, createApp, currentCaller, textResult } from '../src/index.js';
 import type { AccessAuthConfig, Caller } from '../src/index.js';
 import { freePort } from './helpers.js';
 
 const AUDIENCE = 'aud-tag-123';
-const servers: Server[] = [];
+const servers: Array<Server> = [];
 afterEach(() => {
   for (const s of servers.splice(0)) s.close();
 });
@@ -48,7 +48,7 @@ async function fakeTeam() {
 }
 
 async function protectedServer(teamDomain: string, extra: Partial<AccessAuthConfig> = {}): Promise<string> {
-  const registered: (Caller | undefined)[] = [];
+  const registered: Array<Caller | undefined> = [];
   const app = createApp({
     name: 'access-fixture',
     version: '0.0.0',
@@ -81,8 +81,8 @@ async function callerOf(res: Response): Promise<Caller> {
   expect(res.status).toBe(200);
   const text = await res.text();
   const line = text.split('\n').find((l) => l.startsWith('data: '));
-  const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: { text: string }[] } };
-  return JSON.parse(rpc.result.content[0]!.text) as Caller;
+  const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: Array<{ text: string }> } };
+  return JSON.parse(rpc.result.content[0].text) as Caller;
 }
 
 test('a Managed OAuth request runs as its connection, carrying the signed-in user', async () => {

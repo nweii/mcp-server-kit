@@ -5,7 +5,7 @@
 // (token endpoint at /token, spec-shaped redirect/JSON authorize errors, SDK 401 bodies) at the
 // feature level, exercising each behavior end to end over HTTP.
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import { chmodSync, readFileSync } from 'fs';
+import { chmodSync, readFileSync } from 'node:fs';
 import { createApp, createAuth } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';
 import {
@@ -336,7 +336,7 @@ test('registered clients and their tokens survive a restart without replacing le
     }),
   });
   const { access_token } = (await issued.json()) as { access_token: string };
-  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { first.server.close(() => resolve()); });
   open.splice(open.indexOf(first.server), 1);
 
   const secondPort = await freePort();
@@ -347,7 +347,7 @@ test('registered clients and their tokens survive a restart without replacing le
   const postRestart = await approveRegistered(second.base, registration.body.client_id, redirectUri, pkce().challenge, { password: 'sekret' });
   expect(postRestart.status).toBe(302);
 
-  await new Promise<void>((resolve) => second.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { second.server.close(() => resolve()); });
   open.splice(open.indexOf(second.server), 1);
   const thirdPort = await freePort();
   const withoutDcr = await standupAt(thirdPort, config(`http://localhost:${thirdPort}`, false));
@@ -355,7 +355,7 @@ test('registered clients and their tokens survive a restart without replacing le
   expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(401);
   expect(withoutDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
   withoutDcr.auth.saveTokens();
-  await new Promise<void>((resolve) => withoutDcr.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { withoutDcr.server.close(() => resolve()); });
   open.splice(open.indexOf(withoutDcr.server), 1);
 
   const fourthPort = await freePort();
@@ -421,7 +421,7 @@ test('clearDynamicClients persists permanent removal across a restart', async ()
   expect(first.auth.listDynamicClients()).toEqual([]);
   expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${oneToken}` } })).status).toBe(401);
   expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${twoToken}` } })).status).toBe(401);
-  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { first.server.close(() => resolve()); });
   open.splice(open.indexOf(first.server), 1);
 
   const secondPort = await freePort();
@@ -449,7 +449,7 @@ test('revokeDynamicClient reports a persistence failure and restores access', as
   });
   const registration = await registerPublicClient(base, redirectUri);
   const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
-  const persistedBefore = readFileSync(path, 'utf-8');
+  const persistedBefore = readFileSync(path, 'utf8');
 
   chmodSync(directory, 0o500);
   try {
@@ -458,7 +458,7 @@ test('revokeDynamicClient reports a persistence failure and restores access', as
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: 'Bearer static-abc' } })).status).toBe(405);
-    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+    expect(readFileSync(path, 'utf8')).toBe(persistedBefore);
   } finally {
     chmodSync(directory, 0o700);
   }
@@ -508,7 +508,7 @@ test('token issuance fails without returning a token when the store cannot be re
   const registration = await registerPublicClient(base, redirectUri);
   const { verifier, challenge } = pkce();
   const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
-  const persistedBefore = readFileSync(path, 'utf-8');
+  const persistedBefore = readFileSync(path, 'utf8');
 
   chmodSync(directory, 0o500);
   try {
@@ -522,7 +522,7 @@ test('token issuance fails without returning a token when the store cannot be re
     });
     expect(issuance.status).not.toBe(200);
     expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
-    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+    expect(readFileSync(path, 'utf8')).toBe(persistedBefore);
   } finally {
     chmodSync(directory, 0o700);
   }
@@ -629,7 +629,7 @@ test('full PKCE flow: approve → exchange → token accepted on /mcp, with the 
   const body = (await tok.json()) as { access_token?: string; token_type?: string; expires_in?: number };
   expect(body.access_token).toBeTruthy();
   expect(body.token_type).toBe('bearer');
-  expect(body.expires_in).toBe(2592000);
+  expect(body.expires_in).toBe(2_592_000);
 
   const mcp = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${body.access_token}` } });
   expect(mcp.status).toBe(405); // a valid token reaches the POST-only handler

@@ -3,11 +3,11 @@
 // the fixture's echo tool. Tests speak HTTP only — no imports of kit internals.
 import { afterEach, expect, test } from 'bun:test';
 import type { Express } from 'express';
-import type { Server } from 'http';
+import type { Server } from 'node:http';
 import { createApp } from '../src/index.js';
 import { createFixtureApp, FIXTURE_TOKEN } from '../fixture/server.js';
 
-const open: Server[] = [];
+const open: Array<Server> = [];
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 const MODERN_ENVELOPE = {
   'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,

@@ -2,8 +2,8 @@
 // one trivial registered tool, and the app factory. Serves as the kit's own example and the target
 // of its HTTP test suite. Running the file directly starts a real listener, which the token-
 // persistence test spawns as a subprocess so persistence is exercised across a true process boundary.
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod/v4';
 import { createApp, createAuth, startServer, jsonResult, errorResult } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';
@@ -71,7 +71,7 @@ export function createFixtureApp(port = 0) {
 // Running the file directly starts a real listener (the quickstart entry point and the target of
 // the spawned-process persistence test).
 if (import.meta.main) {
-  const port = parseInt(process.env.PORT ?? '3000', 10);
+  const port = Number.parseInt(process.env.PORT ?? '3000', 10);
   const { app, auth } = createFixtureApp(port);
   startServer({
     app,

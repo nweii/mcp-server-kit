@@ -4,11 +4,11 @@
 // it against the same store file, and never imports any internals. The spawned processes run with
 // auth test-mode OFF so the startup token load actually runs; that load is the behavior under test.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { createHash, randomBytes } from 'crypto';
-import { createServer } from 'net';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { createHash, randomBytes } from 'node:crypto';
+import { createServer } from 'node:net';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Subprocess } from 'bun';
 
 const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
@@ -17,7 +17,7 @@ const farFuture = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
 const dir = mkdtempSync(join(tmpdir(), 'kit-persist-'));
 const storePath = join(dir, 'tokens.json');
-const children: Subprocess[] = [];
+const children: Array<Subprocess> = [];
 
 // Seed a token into the store before any server starts, so the first process's startup load sees it.
 writeFileSync(storePath, JSON.stringify({ [PRESEEDED]: farFuture }));
@@ -59,7 +59,7 @@ async function startServer(port: number): Promise<string> {
     } catch {
       // not listening yet
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => { setTimeout(r, 100); });
   }
   throw new Error(`server on port ${port} did not become ready`);
 }
@@ -127,12 +127,12 @@ test('a freshly issued token is written to the store and survives a restart', as
   const token = await issueToken(firstBase);
 
   // Written to disk alongside the preseeded token.
-  const persisted = JSON.parse(readFileSync(storePath, 'utf-8')) as Record<string, number>;
+  const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as Record<string, number>;
   expect(persisted[token]).toBeGreaterThan(Date.now());
   expect(persisted[PRESEEDED]).toBe(farFuture);
 
   // Stop the first process and start a fresh one against the same store.
-  await stop(children[0]!);
+  await stop(children[0]);
   const secondBase = await startServer(await freePort());
 
   // The new process, loading only from disk, still honors the token issued by the old process.

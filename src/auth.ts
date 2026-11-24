@@ -6,9 +6,9 @@
 // state. Leaning on the SDK means the OAuth wire surface (discovery, endpoint paths, error shapes)
 // is whatever the SDK emits; the kit adds only the interposed behaviors.
 import type { RequestHandler, Response } from 'express';
-import { randomUUID, timingSafeEqual } from 'crypto';
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import {
   InvalidClientMetadataError,
   InvalidGrantError,
@@ -59,7 +59,7 @@ export interface AuthConfig {
   clientSecret?: string;
   // Redirect URIs for the pre-registered client. Requires clientId. Defaults to
   // DEFAULT_ALLOWED_REDIRECT_URIS.
-  allowedRedirectUris?: string[];
+  allowedRedirectUris?: Array<string>;
   // Opt-in dynamic client registration: opens /register so clients that can't be pre-configured (e.g.
   // ChatGPT) can register themselves, no per-client server config. Trust rests on the approval gate,
   // PKCE, and the SDK's per-client exact redirect match at /authorize — so this requires
@@ -83,13 +83,13 @@ export interface AuthConfig {
   // when it was approved, for its token's lifetime: a scope that was not offered then, or was
   // declared later, stays withheld until the person connects again. Tokens issued before any scopes
   // were declared hold every scope. Requests report the granted scopes in their caller.
-  scopes?: ScopeDefinition[];
+  scopes?: Array<ScopeDefinition>;
   // Line above the checkboxes. Defaults to "Also allow this connection to:". Use it to say what
   // every connection can do regardless, so the boxes read as additions.
   scopesPrompt?: string;
   // Scopes granted to requests using staticBearerToken. Defaults to every declared scope. Each entry
   // must name a declared scope.
-  staticBearerScopes?: string[];
+  staticBearerScopes?: Array<string>;
   // When true, skips loading the persisted token store at construction and enables seedTestToken.
   testMode?: boolean;
   // When true, disables the SDK's per-endpoint rate limiting (useful under test load).
@@ -116,7 +116,7 @@ export interface DynamicClientRegistrationConfig {
   // registrations are additionally restricted to these entries — each is an exact redirect URI, a
   // loopback URI (any port may vary), or a host-scoped "https://host/*" pattern accepting any path on
   // that origin (useful when a provider's callback path is ephemeral, e.g. ChatGPT's connector id).
-  allowedRedirectUris?: string[];
+  allowedRedirectUris?: Array<string>;
 }
 
 // The instance returned by createAuth. `routes` is the SDK auth router (discovery + /authorize +
@@ -127,7 +127,7 @@ export interface Auth {
   saveTokens(): void;
   // Returns registered public DCR clients. This remains available while DCR is disabled so an
   // administrator can inspect or permanently revoke credentials that are temporarily rejected.
-  listDynamicClients(): OAuthClientInformationFull[];
+  listDynamicClients(): Array<OAuthClientInformationFull>;
   // Permanently removes one DCR registration and all access tokens issued to it. `removed` is
   // false when clientId does not name a dynamically registered client. Throws without changing
   // memory when the deletion cannot be persisted.
@@ -145,7 +145,7 @@ interface PendingCode {
   clientId: string;
   redirectUri: string;
   expiresAt: number;
-  grantedScopes: string[];
+  grantedScopes: Array<string>;
 }
 
 interface TokenRecord {
@@ -153,16 +153,16 @@ interface TokenRecord {
   clientId?: string;
   // Scopes ticked when this connection was approved. Absent for tokens issued before scopes were
   // declared, which hold every scope.
-  grantedScopes?: string[];
+  grantedScopes?: Array<string>;
 }
 
 interface PersistedAuthMetadata {
   clients?: Record<string, OAuthClientInformationFull>;
   tokenClientIds?: Record<string, string>;
-  tokenGrantedScopes?: Record<string, string[]>;
+  tokenGrantedScopes?: Record<string, Array<string>>;
   // Written by an earlier version that recorded unticked scopes. Tokens listed here are dropped on
   // load: their grants can't be reconstructed safely, so those connections approve again.
-  tokenWithheldScopes?: Record<string, string[]>;
+  tokenWithheldScopes?: Record<string, Array<string>>;
 }
 
 const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
@@ -185,7 +185,10 @@ class TokenStore {
 
   private load(): void {
     try {
-      const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, unknown>;
+      // SAFETY: the store is this process's own 0600 file; every value read from it is type-checked
+      // below (expiry, client id, scopes) or validated by isPersistedPublicClient.
+      const data = JSON.parse(readFileSync(this.storePath, 'utf8')) as Record<string, unknown>;
+      // SAFETY: as above; each metadata field is type-checked or validated where it is read.
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
       const tokenGrantedScopes = metadata?.tokenGrantedScopes ?? {};
@@ -194,9 +197,10 @@ class TokenStore {
       for (const [token, expiry] of Object.entries(data)) {
         if (typeof expiry === 'number' && expiry > now && !(token in legacyWithheld)) {
           const granted = tokenGrantedScopes[token];
+          const clientId = tokenClientIds[token];
           this.tokens.set(token, {
             expiry,
-            clientId: tokenClientIds[token],
+            clientId: typeof clientId === 'string' ? clientId : undefined,
             ...(Array.isArray(granted) ? { grantedScopes: granted.filter((s) => typeof s === 'string') } : {}),
           });
         }
@@ -217,7 +221,7 @@ class TokenStore {
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
-      const tokenGrantedScopes: Record<string, string[]> = {};
+      const tokenGrantedScopes: Record<string, Array<string>> = {};
       for (const [token, { expiry, clientId, grantedScopes }] of this.tokens) {
         data[token] = expiry;
         if (clientId) tokenClientIds[token] = clientId;
@@ -235,13 +239,13 @@ class TokenStore {
       writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 });
       renameSync(temporaryPath, this.storePath);
       return true;
-    } catch (err) {
+    } catch (error) {
       try {
         unlinkSync(temporaryPath);
       } catch {
         // The temporary file either was never created or cannot be removed after the write error.
       }
-      console.error('[auth] failed to save token store:', err);
+      console.error('[auth] failed to save token store:', error);
       return false;
     }
   }
@@ -270,7 +274,7 @@ class TokenStore {
 
   // clientId is undefined for the pre-registered client and names the registration for a DCR client.
   // grantedScopes is undefined when the app declares no scopes.
-  issueToken(clientId: string | undefined, grantedScopes: string[] | undefined): string {
+  issueToken(clientId: string | undefined, grantedScopes: Array<string> | undefined): string {
     this.prune();
     const token = randomUUID();
     const previous = this.tokens.get(token);
@@ -317,7 +321,7 @@ class TokenStore {
     return client;
   }
 
-  listClients(): OAuthClientInformationFull[] {
+  listClients(): Array<OAuthClientInformationFull> {
     return [...this.clients.values()].map((client) => structuredClone(client));
   }
 
@@ -365,6 +369,7 @@ class TokenStore {
 
 function isPersistedPublicClient(clientId: string, client: unknown): client is OAuthClientInformationFull {
   if (!client || typeof client !== 'object') return false;
+  // SAFETY: client is a non-null object, and every field read below is type-checked.
   const record = client as Partial<OAuthClientInformationFull>;
   return record.client_id === clientId && Array.isArray(record.redirect_uris) && record.redirect_uris.every((uri) => typeof uri === 'string');
 }
@@ -431,7 +436,7 @@ function describeRequester(client: OAuthClientInformationFull, redirectUri: stri
   } catch {
     host = undefined;
   }
-  const name = (client as { client_name?: string }).client_name?.trim() || undefined;
+  const name = client.client_name?.trim() || undefined;
   if (name && host) return `${name} (${host})`;
   return name ?? host;
 }
@@ -439,8 +444,8 @@ function describeRequester(client: OAuthClientInformationFull, redirectUri: stri
 // Constant-time string comparison. A length mismatch returns early (so length can be inferred from
 // timing), but equal-length inputs are compared without a content-dependent timing signal.
 function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf-8');
-  const bb = Buffer.from(b, 'utf-8');
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
   if (ab.length !== bb.length) return false;
   return timingSafeEqual(ab, bb);
 }
@@ -452,10 +457,10 @@ function callerExtra(kind: CallerKind, clientName?: string): Record<string, unkn
 
 function escapeHtml(str: string): string {
   return str
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }
 
 export function createAuth(config: AuthConfig): Auth {
@@ -476,12 +481,13 @@ export function createAuth(config: AuthConfig): Auth {
   // Scope ids travel in space-separated OAuth scope strings and persist in the token store, so a
   // malformed or duplicate id is a config error caught at startup.
   for (const id of scopeIds) {
-    if (!/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(id)) throw new Error(`scope id "${id}" must be a non-empty OAuth scope token (no spaces, quotes or backslashes)`);
+    if (!/^[\u0021\u0023-\u005b\u005d-\u007e]+$/.test(id)) throw new Error(`scope id "${id}" must be a non-empty OAuth scope token (no spaces, quotes or backslashes)`);
   }
   if (new Set(scopeIds).size !== scopeIds.length) throw new Error('scope ids must be unique');
   const unknownBearerScope = config.staticBearerScopes?.find((id) => !scopeIds.includes(id));
   if (unknownBearerScope !== undefined) throw new Error(`staticBearerScopes names "${unknownBearerScope}", which is not a declared scope`);
-  const staticBearerScopes = config.staticBearerScopes ? scopeIds.filter((id) => config.staticBearerScopes!.includes(id)) : scopeIds;
+  const requestedBearerScopes = config.staticBearerScopes;
+  const staticBearerScopes = requestedBearerScopes ? scopeIds.filter((id) => requestedBearerScopes.includes(id)) : scopeIds;
 
   // Refuse to construct with /authorize unguarded: a stranger who reached it could otherwise approve
   // their own client and gain access. Any one guard satisfies it — an approval password, a client
@@ -547,7 +553,7 @@ export function createAuth(config: AuthConfig): Auth {
         token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
         grant_types: ['authorization_code'],
         response_types: ['code'],
-      } as OAuthClientInformationFull)
+      })
     : undefined;
 
   function unsafeDynamicClientReason(client: OAuthClientInformationFull): string | undefined {
@@ -561,7 +567,7 @@ export function createAuth(config: AuthConfig): Auth {
     }
     const hardened = !!dynamicRedirectUris?.length;
     if (hardened) {
-      if (!client.redirect_uris.every((uri) => dynamicRedirectUris!.some((allowed) => redirectMatchesAllowed(uri, allowed)))) {
+      if (!client.redirect_uris.every((uri) => dynamicRedirectUris.some((allowed) => redirectMatchesAllowed(uri, allowed)))) {
         return 'Every redirect_uri must be allowed by dynamicClientRegistration.allowedRedirectUris';
       }
     } else if (client.redirect_uris.some(isInsecureHttpRedirect)) {
@@ -594,6 +600,8 @@ export function createAuth(config: AuthConfig): Auth {
   };
   if (dynamicRegistration) {
     clientsStore.registerClient = (metadata) => {
+      // SAFETY: the SDK's registration handler has already parsed the metadata and assigned client_id;
+      // unsafeDynamicClientReason checks the fields this server relies on.
       const client = metadata as OAuthClientInformationFull;
       const reason = unsafeDynamicClientReason(client);
       if (reason) throw new InvalidClientMetadataError(reason);
@@ -603,7 +611,7 @@ export function createAuth(config: AuthConfig): Auth {
 
   // The declared scopes a token holds, in declaration order. Granted ids that are no longer declared
   // are ignored; a token with no recorded grants predates scopes and holds every one.
-  function heldScopes(granted: readonly string[] | undefined): string[] {
+  function heldScopes(granted: ReadonlyArray<string> | undefined): Array<string> {
     return granted ? scopeIds.filter((id) => granted.includes(id)) : scopeIds;
   }
 
@@ -612,12 +620,12 @@ export function createAuth(config: AuthConfig): Auth {
   }
 
   // The scopes offered right now, in declaration order.
-  async function offeredScopes(): Promise<ScopeDefinition[]> {
+  async function offeredScopes(): Promise<Array<ScopeDefinition>> {
     const offered = await Promise.all(scopes.map(async (s) => (s.offered ? s.offered() : true)));
     return scopes.filter((_, i) => offered[i]);
   }
 
-  function renderScopes(offered: ScopeDefinition[], ticked: ReadonlySet<string>): string {
+  function renderScopes(offered: Array<ScopeDefinition>, ticked: ReadonlySet<string>): string {
     if (!offered.length) return '';
     const rows = offered
       .map((s) => {
@@ -702,6 +710,8 @@ export function createAuth(config: AuthConfig): Auth {
     // password-gated form on POST via res.req.
     async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
       const req = res.req;
+      // SAFETY: urlencoded fields may be arrays; password is stringified and grant is filtered to
+      // strings where they are read.
       const body = (req.body ?? {}) as Record<string, string>;
 
       const hidden = [
@@ -714,8 +724,7 @@ export function createAuth(config: AuthConfig): Auth {
         // The client's own scope request rides along so a re-rendered page starts from it again.
         ['scope', params.scopes?.length ? params.scopes.join(' ') : undefined],
       ]
-        .filter((e): e is [string, string] => e[1] !== undefined)
-        .map(([n, v]) => `<input type="hidden" name="${n}" value="${escapeHtml(v)}">`)
+        .flatMap(([n, v]) => (v === undefined ? [] : [`<input type="hidden" name="${n}" value="${escapeHtml(v)}">`]))
         .join('\n    ');
 
       // Shown on the approval page so the operator can see which client and callback host they are
@@ -733,6 +742,7 @@ export function createAuth(config: AuthConfig): Auth {
       }
 
       // POST — the approval form was submitted. Checkboxes post only when ticked.
+      // SAFETY: widening to unknown; the value is filtered to strings on the next line.
       const grantField = (body as Record<string, unknown>).grant;
       const granted = new Set((Array.isArray(grantField) ? grantField : [grantField]).filter((v): v is string => typeof v === 'string'));
       if (passwordGate && !passwordValid((body.password ?? '').toString())) {
@@ -786,7 +796,7 @@ export function createAuth(config: AuthConfig): Auth {
         token_type: 'bearer',
         expires_in: TOKEN_TTL_MS / 1000,
         ...(scopeIds.length ? { scope: granted.join(' ') } : {}),
-      } as OAuthTokens;
+      };
     },
 
     // Refresh tokens are intentionally not issued or accepted: tokens live 30 days and clients
@@ -815,7 +825,7 @@ export function createAuth(config: AuthConfig): Auth {
           if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
             throw new InvalidTokenError('invalid or expired access token');
           }
-          const clientName = (dynamicClient as { client_name?: string }).client_name?.trim() || undefined;
+          const clientName = dynamicClient.client_name?.trim() || undefined;
           return { token, clientId: record.clientId, scopes, expiresAt, extra: callerExtra('dynamic', clientName) };
         }
         // A token with no registration belongs to the pre-registered client. Without one configured,

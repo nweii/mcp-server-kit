@@ -4,7 +4,7 @@
 // process entry and by tests.
 import express from 'express';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
@@ -35,7 +35,7 @@ export interface CreateAppOptions {
   // uptime monitor grants nothing and rotates independently of the /mcp auth.
   healthToken?: string;
   // Allowed CORS origins. Omit or pass null to allow any origin (`*`); pass an array to restrict.
-  corsOrigins?: string[] | null;
+  corsOrigins?: Array<string> | null;
   // Optional liveness probe run on an authorized /health request. Throwing marks the server
   // unhealthy (503); returning normally reports healthy (200).
   healthProbe?: () => void | Promise<void>;
@@ -73,7 +73,7 @@ function makeRequestLogger(): RequestHandler {
   };
 }
 
-function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | null): boolean {
+function setCorsHeaders(req: Request, res: Response, allowedOrigins: Array<string> | null): boolean {
   const origin = req.headers.origin;
 
   if (allowedOrigins === null) {
@@ -94,7 +94,7 @@ function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | 
   return true;
 }
 
-function makeOriginGuard(allowedOrigins: string[] | null): RequestHandler {
+function makeOriginGuard(allowedOrigins: Array<string> | null): RequestHandler {
   return (req, res, next) => {
     const origin = req.headers.origin;
     if (allowedOrigins !== null && origin && !allowedOrigins.includes(origin)) {
@@ -107,8 +107,8 @@ function makeOriginGuard(allowedOrigins: string[] | null): RequestHandler {
 
 // Constant-time string comparison so the health token can't be recovered by timing.
 function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf-8');
-  const bb = Buffer.from(b, 'utf-8');
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
   if (ab.length !== bb.length) return false;
   return timingSafeEqual(ab, bb);
 }
@@ -196,12 +196,14 @@ export function createApp(opts: CreateAppOptions): Express {
 
   app.post('/mcp', originGuard, authMiddleware, async (req, res) => {
     if (!opts.testMode) {
+      // SAFETY: only used for a log line; optional chaining tolerates any body.
       const body = req.body as { method?: string; params?: { name?: string } };
       const mcpMethod = body?.method ?? '?';
       const toolName = body?.params?.name;
       console.log(`[${ts()}] MCP ${mcpMethod}${toolName ? ` (${toolName})` : ''}`);
     }
     // Everything the request does, from tool registration to each tool handler, runs as its caller.
+    // SAFETY: the auth middleware sets req.auth; a missing one yields an undefined caller.
     const caller = callerFromAuthInfo((req as Request & { auth?: AuthInfo }).auth);
     await runAsCaller(caller, () => nodeMcpHandler(req, res, req.body));
   });

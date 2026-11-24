@@ -2,7 +2,7 @@
 // scopes its connection was granted. The app factory runs each /mcp request inside the caller's
 // context, so tool registration, tool handlers and anything they call can read it with
 // currentCaller() instead of threading it through every function.
-import { AsyncLocalStorage } from 'async_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 
 // How the caller authenticated: the configured OAuth client, a dynamically registered client, the
@@ -23,7 +23,7 @@ export interface Caller {
   email?: string;
   userId?: string;
   // Scopes this connection was granted. Empty when the auth module declares no scopes.
-  scopes: string[];
+  scopes: Array<string>;
 }
 
 const context = new AsyncLocalStorage<Caller>();
@@ -44,6 +44,7 @@ export function runAsCaller<T>(caller: Caller | undefined, fn: () => T): T {
 // The caller described by verified auth info, or undefined for auth info that neither the kit's auth
 // module nor createAccessAuth produced.
 export function callerFromAuthInfo(info: AuthInfo | undefined): Caller | undefined {
+  // SAFETY: every field is typed unknown and narrowed below.
   const extra = info?.extra as { kind?: unknown; clientName?: unknown; email?: unknown; userId?: unknown } | undefined;
   const kind = extra?.kind;
   if (!info || (kind !== 'static' && kind !== 'dynamic' && kind !== 'bearer' && kind !== 'access')) return undefined;

@@ -3,8 +3,8 @@
 // written during an /mcp request name its caller (client id, and the client's declared name). The
 // caller supplies the log directory, which argument names to redact, and the enable/suppress gates,
 // so nothing here is tied to a particular server's tools or environment variables.
-import { mkdirSync, appendFileSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolResult } from './results.js';
 import { currentCaller } from './caller.js';
@@ -76,8 +76,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
     if (dirEnsured) return;
     try {
       mkdirSync(config.logDir, { recursive: true });
-    } catch (err) {
-      console.error('[log] failed to create log dir:', err);
+    } catch (error) {
+      console.error('[log] failed to create log dir:', error);
     }
     dirEnsured = true; // even on failure: avoid retrying mkdir on every call
   }
@@ -88,8 +88,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
     ensureDir();
     try {
       appendFileSync(join(config.logDir, filename), JSON.stringify(record) + '\n');
-    } catch (err) {
-      console.error(`[log] failed to write ${filename}:`, err);
+    } catch (error) {
+      console.error(`[log] failed to write ${filename}:`, error);
     }
   }
 
@@ -148,6 +148,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
   }
 
   function registerLogged(server: McpServer, name: string, def: ToolDef, handler: ToolHandler) {
+    // SAFETY: registerTool's overloads tie the handler to the schema in def, which this wrapper
+    // passes through untouched; the handler sees exactly the arguments the SDK validated.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (server.registerTool as any)(name, def, async (args: unknown) => {
       const start = Date.now();
@@ -162,15 +164,15 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
           error: ok ? undefined : extractErrorText(result),
         });
         return result;
-      } catch (e) {
+      } catch (error) {
         logToolCall({
           tool: name,
           args,
           ok: false,
           duration_ms: Date.now() - start,
-          error: e instanceof Error ? e.message : String(e),
+          error: error instanceof Error ? error.message : String(error),
         });
-        throw e;
+        throw error;
       }
     });
   }
