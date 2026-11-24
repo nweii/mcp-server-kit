@@ -18,9 +18,9 @@
     "fixture": "bun run fixture/server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.1.1",
-    "@modelcontextprotocol/server": "^2.3.1",
-    "@modelcontextprotocol/server-legacy": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@modelcontextprotocol/server-legacy": "^2.4.0",
     "express": "^4.22.3"
   },
   "devDependencies": {
