@@ -1,7 +1,7 @@
 // Scopes chosen on the approval page: which boxes appear and start ticked, what a connection is
 // granted when a box is left unticked or not shown, how grants persist, and the static bearer's configured set.
 import { afterEach, expect, test } from 'bun:test';
-import { writeFileSync } from 'fs';
+import { writeFileSync } from 'node:fs';
 import { createAuth } from '../src/index.js';
 import type { ScopeDefinition } from '../src/index.js';
 import { REDIRECT, callWhoami, closeAll, exchange, pkce, recordingServer, storePath } from './helpers.js';

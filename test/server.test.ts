@@ -3,7 +3,7 @@
 // the fixture's echo tool. Tests speak HTTP only — no imports of kit internals.
 import { afterEach, expect, test } from 'bun:test';
 import type { Express } from 'express';
-import type { Server } from 'http';
+import type { Server } from 'node:http';
 import { createApp } from '../src/index.js';
 import { createFixtureApp, FIXTURE_TOKEN } from '../fixture/server.js';
 

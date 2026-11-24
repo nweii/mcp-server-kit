@@ -3,8 +3,8 @@
 // written during an /mcp request name its caller (client id, and the client's declared name). The
 // caller supplies the log directory, which argument names to redact, and the enable/suppress gates,
 // so nothing here is tied to a particular server's tools or environment variables.
-import { mkdirSync, appendFileSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolResult } from './results.js';
 import { currentCaller } from './caller.js';

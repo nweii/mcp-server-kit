@@ -1,7 +1,7 @@
 // ABOUTME: Auth middleware for a server behind a Cloudflare Access application with Managed OAuth:
 // Access runs the sign-in and token lifecycle, and this verifies the signed identity it forwards.
-import { createPublicKey, verify } from 'crypto';
-import type { JsonWebKey, KeyObject } from 'crypto';
+import { createPublicKey, verify } from 'node:crypto';
+import type { JsonWebKey, KeyObject } from 'node:crypto';
 import type { Request, RequestHandler } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 

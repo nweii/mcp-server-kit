@@ -5,7 +5,7 @@
 // (token endpoint at /token, spec-shaped redirect/JSON authorize errors, SDK 401 bodies) at the
 // feature level, exercising each behavior end to end over HTTP.
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import { chmodSync, readFileSync } from 'fs';
+import { chmodSync, readFileSync } from 'node:fs';
 import { createApp, createAuth } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';
 import {

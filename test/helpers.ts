@@ -1,12 +1,12 @@
 // Shared OAuth test helpers: a live kit server on a free port, the PKCE approve→exchange steps, and
 // dynamic client registration. Each test file closes the servers in `open` after every test.
 import { expect } from 'bun:test';
-import type { Server } from 'http';
-import { createHash, randomBytes, randomUUID } from 'crypto';
-import { mkdirSync } from 'fs';
-import { createServer } from 'net';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import type { Server } from 'node:http';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createApp, createAuth, currentCaller, textResult } from '../src/index.js';
 import type { AuthConfig, Caller, RegisterTools } from '../src/index.js';
 

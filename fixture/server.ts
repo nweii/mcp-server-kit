@@ -2,8 +2,8 @@
 // one trivial registered tool, and the app factory. Serves as the kit's own example and the target
 // of its HTTP test suite. Running the file directly starts a real listener, which the token-
 // persistence test spawns as a subprocess so persistence is exercised across a true process boundary.
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod/v4';
 import { createApp, createAuth, startServer, jsonResult, errorResult } from '../src/index.js';
 import type { AuthConfig } from '../src/index.js';

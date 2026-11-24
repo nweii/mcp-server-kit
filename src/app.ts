@@ -4,7 +4,7 @@
 // process entry and by tests.
 import express from 'express';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';

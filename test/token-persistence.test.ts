@@ -4,11 +4,11 @@
 // it against the same store file, and never imports any internals. The spawned processes run with
 // auth test-mode OFF so the startup token load actually runs; that load is the behavior under test.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { createHash, randomBytes } from 'crypto';
-import { createServer } from 'net';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { createHash, randomBytes } from 'node:crypto';
+import { createServer } from 'node:net';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Subprocess } from 'bun';
 
 const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';

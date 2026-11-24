@@ -6,9 +6,9 @@
 // state. Leaning on the SDK means the OAuth wire surface (discovery, endpoint paths, error shapes)
 // is whatever the SDK emits; the kit adds only the interposed behaviors.
 import type { RequestHandler, Response } from 'express';
-import { randomUUID, timingSafeEqual } from 'crypto';
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import {
   InvalidClientMetadataError,
   InvalidGrantError,

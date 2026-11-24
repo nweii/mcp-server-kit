@@ -2,7 +2,7 @@
 // scopes its connection was granted. The app factory runs each /mcp request inside the caller's
 // context, so tool registration, tool handlers and anything they call can read it with
 // currentCaller() instead of threading it through every function.
-import { AsyncLocalStorage } from 'async_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 
 // How the caller authenticated: the configured OAuth client, a dynamically registered client, the

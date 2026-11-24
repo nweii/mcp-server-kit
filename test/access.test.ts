@@ -1,10 +1,10 @@
 // ABOUTME: createAccessAuth over HTTP: a request carrying a valid Access JWT runs as an 'access' caller,
 // and a missing, forged, expired, wrong-audience, or identity-less JWT is refused before /mcp.
 import { afterEach, expect, test } from 'bun:test';
-import { generateKeyPairSync, sign } from 'crypto';
-import type { KeyObject } from 'crypto';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
 import express from 'express';
-import type { Server } from 'http';
+import type { Server } from 'node:http';
 import { createAccessAuth, createApp, currentCaller, textResult } from '../src/index.js';
 import type { AccessAuthConfig, Caller } from '../src/index.js';
 import { freePort } from './helpers.js';

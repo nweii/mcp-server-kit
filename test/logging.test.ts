@@ -2,9 +2,9 @@
 // record shapes written for tool calls and feedback, the enabled/suppress gates, and the
 // registerLogged wrapper's timing + outcome capture around a tool handler.
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createAuditLog } from '../src/index.js';
 import type { ToolResult } from '../src/index.js';
 
