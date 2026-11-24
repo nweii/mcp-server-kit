@@ -136,7 +136,6 @@ describe('registerLogged', () => {
     const log = createAuditLog({ logDir: dir, redactedFields: REDACTED });
     const { server, call } = fakeServer();
     const result: ToolResult = { content: [{ type: 'text', text: 'ok' }] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     log.registerLogged(server as any, 'demo', {}, async () => result);
     expect(await call({ path: 'x.md', content: 'body' })).toBe(result);
     const [rec] = readJsonl(dir, 'tool-calls.jsonl');
@@ -149,7 +148,6 @@ describe('registerLogged', () => {
     const dir = freshDir();
     const log = createAuditLog({ logDir: dir });
     const { server, call } = fakeServer();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     log.registerLogged(server as any, 'demo', {}, async () => ({ content: [{ type: 'text', text: 'try foo' }], isError: true }));
     await call({});
     const [rec] = readJsonl(dir, 'tool-calls.jsonl');
@@ -161,7 +159,6 @@ describe('registerLogged', () => {
     const dir = freshDir();
     const log = createAuditLog({ logDir: dir });
     const { server, call } = fakeServer();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     log.registerLogged(server as any, 'demo', {}, async () => { throw new Error('boom'); });
     await expect(call({})).rejects.toThrow('boom');
     const [rec] = readJsonl(dir, 'tool-calls.jsonl');
