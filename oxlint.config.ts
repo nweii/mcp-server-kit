@@ -22,7 +22,6 @@ export default defineConfig({
     'typescript/no-unsafe-return': 'off', // Temporary during migration
     'quality/no-unknown-returns': 'off', // Temporary during migration
     'typescript/no-unsafe-call': 'off', // Temporary during migration
-    'typescript/no-floating-promises': 'off', // Temporary during migration
     'typescript/await-thenable': 'off', // Temporary during migration
     'anti-slop/no-module-mocking': 'error',
     'anti-slop/no-shape-in-symbol-names': 'error',
@@ -34,10 +33,6 @@ export default defineConfig({
       // Tests build fixtures with casts whose invariant is the test itself.
       files: ['test/**'],
       rules: { 'anti-slop/require-safety-comment-for-type-assertion': 'off' },
-    },
-    {
-      files: ['**/*.ts'],
-      rules: { '@typescript-eslint/no-floating-promises': 'off' }, // Temporary during migration
     },
   ],
 });

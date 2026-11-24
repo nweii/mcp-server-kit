@@ -146,6 +146,7 @@ export function createAccessAuth(config: AccessAuthConfig): RequestHandler {
         }
         (req as Request & { auth?: AuthInfo }).auth = info;
         next();
-      });
+      })
+      .catch(next);
   };
 }
