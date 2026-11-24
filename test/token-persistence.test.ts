@@ -59,7 +59,7 @@ async function startServer(port: number): Promise<string> {
     } catch {
       // not listening yet
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => { setTimeout(r, 100); });
   }
   throw new Error(`server on port ${port} did not become ready`);
 }

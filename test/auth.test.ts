@@ -336,7 +336,7 @@ test('registered clients and their tokens survive a restart without replacing le
     }),
   });
   const { access_token } = (await issued.json()) as { access_token: string };
-  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { first.server.close(() => resolve()); });
   open.splice(open.indexOf(first.server), 1);
 
   const secondPort = await freePort();
@@ -347,7 +347,7 @@ test('registered clients and their tokens survive a restart without replacing le
   const postRestart = await approveRegistered(second.base, registration.body.client_id, redirectUri, pkce().challenge, { password: 'sekret' });
   expect(postRestart.status).toBe(302);
 
-  await new Promise<void>((resolve) => second.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { second.server.close(() => resolve()); });
   open.splice(open.indexOf(second.server), 1);
   const thirdPort = await freePort();
   const withoutDcr = await standupAt(thirdPort, config(`http://localhost:${thirdPort}`, false));
@@ -355,7 +355,7 @@ test('registered clients and their tokens survive a restart without replacing le
   expect((await fetch(`${withoutDcr.base}/mcp`, { headers: { Authorization: `Bearer ${access_token}` } })).status).toBe(401);
   expect(withoutDcr.auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
   withoutDcr.auth.saveTokens();
-  await new Promise<void>((resolve) => withoutDcr.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { withoutDcr.server.close(() => resolve()); });
   open.splice(open.indexOf(withoutDcr.server), 1);
 
   const fourthPort = await freePort();
@@ -421,7 +421,7 @@ test('clearDynamicClients persists permanent removal across a restart', async ()
   expect(first.auth.listDynamicClients()).toEqual([]);
   expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${oneToken}` } })).status).toBe(401);
   expect((await fetch(`${first.base}/mcp`, { headers: { Authorization: `Bearer ${twoToken}` } })).status).toBe(401);
-  await new Promise<void>((resolve) => first.server.close(() => resolve()));
+  await new Promise<void>((resolve) => { first.server.close(() => resolve()); });
   open.splice(open.indexOf(first.server), 1);
 
   const secondPort = await freePort();
