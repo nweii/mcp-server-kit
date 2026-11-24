@@ -44,7 +44,7 @@ function teamUrl(teamDomain: string): string {
 }
 
 function decodeSegment(segment: string): unknown {
-  return JSON.parse(Buffer.from(segment, 'base64url').toString('utf-8'));
+  return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
 }
 
 // Fetches the team's signing keys and keeps them, refetching when a token names a key id it hasn't

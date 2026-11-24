@@ -16,7 +16,6 @@ export default defineConfig({
     'typescript/no-unsafe-type-assertion': 'off', // Temporary during migration
     'quality/no-unsafe-dictionary-type': 'off', // Temporary during migration
     'quality/no-conditional-empty-object-spread': 'off', // Temporary during migration
-    'unicorn/text-encoding-identifier-case': 'off', // Temporary during migration
     'typescript/no-unnecessary-type-assertion': 'off', // Temporary during migration
     'quality/no-known-value-widening': 'off', // Temporary during migration
     'no-console': 'off', // Temporary during migration

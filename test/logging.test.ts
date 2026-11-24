@@ -24,7 +24,7 @@ afterEach(() => {
 function readJsonl(dir: string, file: string): Array<Record<string, unknown>> {
   const path = join(dir, file);
   if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf-8')
+  return readFileSync(path, 'utf8')
     .split('\n')
     .filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, unknown>);

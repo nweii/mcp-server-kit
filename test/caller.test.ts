@@ -56,9 +56,9 @@ test('audit records name the caller when written during a request', () => {
     log.logToolCall({ tool: 'inside', args: {}, ok: true, duration_ms: 1 });
     log.logFeedback({ goal: 'g', attempted: 'a', stuck_on: 's' });
   });
-  const calls = readFileSync(join(dir, 'tool-calls.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  const calls = readFileSync(join(dir, 'tool-calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(calls[0].client).toBeUndefined();
   expect(calls[1]).toMatchObject({ client: 'abc', client_name: 'ChatGPT', tool: 'inside' });
-  const [feedback] = readFileSync(join(dir, 'feedback.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+  const [feedback] = readFileSync(join(dir, 'feedback.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(feedback).toMatchObject({ client: 'abc', client_name: 'ChatGPT', goal: 'g' });
 });

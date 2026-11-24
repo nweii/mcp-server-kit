@@ -185,7 +185,7 @@ class TokenStore {
 
   private load(): void {
     try {
-      const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Record<string, unknown>;
+      const data = JSON.parse(readFileSync(this.storePath, 'utf8')) as Record<string, unknown>;
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
       const tokenGrantedScopes = metadata?.tokenGrantedScopes ?? {};
@@ -439,8 +439,8 @@ function describeRequester(client: OAuthClientInformationFull, redirectUri: stri
 // Constant-time string comparison. A length mismatch returns early (so length can be inferred from
 // timing), but equal-length inputs are compared without a content-dependent timing signal.
 function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf-8');
-  const bb = Buffer.from(b, 'utf-8');
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
   if (ab.length !== bb.length) return false;
   return timingSafeEqual(ab, bb);
 }

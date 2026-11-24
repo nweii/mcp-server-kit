@@ -449,7 +449,7 @@ test('revokeDynamicClient reports a persistence failure and restores access', as
   });
   const registration = await registerPublicClient(base, redirectUri);
   const token = await issueRegisteredToken(base, registration.body.client_id, redirectUri);
-  const persistedBefore = readFileSync(path, 'utf-8');
+  const persistedBefore = readFileSync(path, 'utf8');
 
   chmodSync(directory, 0o500);
   try {
@@ -458,7 +458,7 @@ test('revokeDynamicClient reports a persistence failure and restores access', as
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status).toBe(405);
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${legacyToken}` } })).status).toBe(405);
     expect((await fetch(`${base}/mcp`, { headers: { Authorization: 'Bearer static-abc' } })).status).toBe(405);
-    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+    expect(readFileSync(path, 'utf8')).toBe(persistedBefore);
   } finally {
     chmodSync(directory, 0o700);
   }
@@ -508,7 +508,7 @@ test('token issuance fails without returning a token when the store cannot be re
   const registration = await registerPublicClient(base, redirectUri);
   const { verifier, challenge } = pkce();
   const approval = await approveRegistered(base, registration.body.client_id, redirectUri, challenge, { password: 'sekret' });
-  const persistedBefore = readFileSync(path, 'utf-8');
+  const persistedBefore = readFileSync(path, 'utf8');
 
   chmodSync(directory, 0o500);
   try {
@@ -522,7 +522,7 @@ test('token issuance fails without returning a token when the store cannot be re
     });
     expect(issuance.status).not.toBe(200);
     expect(auth.listDynamicClients().map((client) => client.client_id)).toEqual([registration.body.client_id]);
-    expect(readFileSync(path, 'utf-8')).toBe(persistedBefore);
+    expect(readFileSync(path, 'utf8')).toBe(persistedBefore);
   } finally {
     chmodSync(directory, 0o700);
   }

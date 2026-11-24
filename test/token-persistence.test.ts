@@ -127,7 +127,7 @@ test('a freshly issued token is written to the store and survives a restart', as
   const token = await issueToken(firstBase);
 
   // Written to disk alongside the preseeded token.
-  const persisted = JSON.parse(readFileSync(storePath, 'utf-8')) as Record<string, number>;
+  const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as Record<string, number>;
   expect(persisted[token]).toBeGreaterThan(Date.now());
   expect(persisted[PRESEEDED]).toBe(farFuture);
 
