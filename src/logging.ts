@@ -76,8 +76,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
     if (dirEnsured) return;
     try {
       mkdirSync(config.logDir, { recursive: true });
-    } catch (err) {
-      console.error('[log] failed to create log dir:', err);
+    } catch (error) {
+      console.error('[log] failed to create log dir:', error);
     }
     dirEnsured = true; // even on failure: avoid retrying mkdir on every call
   }
@@ -88,8 +88,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
     ensureDir();
     try {
       appendFileSync(join(config.logDir, filename), JSON.stringify(record) + '\n');
-    } catch (err) {
-      console.error(`[log] failed to write ${filename}:`, err);
+    } catch (error) {
+      console.error(`[log] failed to write ${filename}:`, error);
     }
   }
 
@@ -162,15 +162,15 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
           error: ok ? undefined : extractErrorText(result),
         });
         return result;
-      } catch (e) {
+      } catch (error) {
         logToolCall({
           tool: name,
           args,
           ok: false,
           duration_ms: Date.now() - start,
-          error: e instanceof Error ? e.message : String(e),
+          error: error instanceof Error ? error.message : String(error),
         });
-        throw e;
+        throw error;
       }
     });
   }

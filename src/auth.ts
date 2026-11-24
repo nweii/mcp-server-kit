@@ -235,13 +235,13 @@ class TokenStore {
       writeFileSync(temporaryPath, JSON.stringify(data), { mode: 0o600 });
       renameSync(temporaryPath, this.storePath);
       return true;
-    } catch (err) {
+    } catch (error) {
       try {
         unlinkSync(temporaryPath);
       } catch {
         // The temporary file either was never created or cannot be removed after the write error.
       }
-      console.error('[auth] failed to save token store:', err);
+      console.error('[auth] failed to save token store:', error);
       return false;
     }
   }
