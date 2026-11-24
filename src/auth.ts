@@ -481,7 +481,8 @@ export function createAuth(config: AuthConfig): Auth {
   if (new Set(scopeIds).size !== scopeIds.length) throw new Error('scope ids must be unique');
   const unknownBearerScope = config.staticBearerScopes?.find((id) => !scopeIds.includes(id));
   if (unknownBearerScope !== undefined) throw new Error(`staticBearerScopes names "${unknownBearerScope}", which is not a declared scope`);
-  const staticBearerScopes = config.staticBearerScopes ? scopeIds.filter((id) => config.staticBearerScopes!.includes(id)) : scopeIds;
+  const requestedBearerScopes = config.staticBearerScopes;
+  const staticBearerScopes = requestedBearerScopes ? scopeIds.filter((id) => requestedBearerScopes.includes(id)) : scopeIds;
 
   // Refuse to construct with /authorize unguarded: a stranger who reached it could otherwise approve
   // their own client and gain access. Any one guard satisfies it — an approval password, a client

@@ -158,12 +158,13 @@ export async function issueRegisteredToken(base: string, clientId: string, redir
   const { verifier, challenge } = pkce();
   const approval = await approveRegistered(base, clientId, redirectUri, challenge, { password: 'sekret' });
   expect(approval.code).toBeTruthy();
+  if (!approval.code) throw new Error('approval returned no code');
   const token = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
-      code: approval.code!,
+      code: approval.code,
       code_verifier: verifier,
       client_id: clientId,
       redirect_uri: redirectUri,
@@ -206,6 +207,7 @@ export async function callWhoami(base: string, token: string): Promise<Caller> {
 export async function staticClientToken(base: string): Promise<string> {
   const { verifier, challenge } = pkce();
   const approval = await approve(base, challenge, { password: 'sekret' });
-  const res = await exchange(base, approval.code!, verifier);
+  if (!approval.code) throw new Error('approval returned no code');
+  const res = await exchange(base, approval.code, verifier);
   return ((await res.json()) as { access_token: string }).access_token;
 }

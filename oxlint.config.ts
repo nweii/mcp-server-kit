@@ -19,7 +19,6 @@ export default defineConfig({
     'quality/no-known-value-widening': 'off', // Temporary during migration
     'no-console': 'off', // Temporary during migration
     'unicorn/consistent-function-scoping': 'off', // Temporary during migration
-    'typescript/no-non-null-assertion': 'off', // Temporary during migration
     'typescript/no-unsafe-return': 'off', // Temporary during migration
     'quality/no-unknown-returns': 'off', // Temporary during migration
     'quality/no-array-filter-map': 'off', // Temporary during migration
