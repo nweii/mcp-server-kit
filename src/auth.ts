@@ -59,7 +59,7 @@ export interface AuthConfig {
   clientSecret?: string;
   // Redirect URIs for the pre-registered client. Requires clientId. Defaults to
   // DEFAULT_ALLOWED_REDIRECT_URIS.
-  allowedRedirectUris?: string[];
+  allowedRedirectUris?: Array<string>;
   // Opt-in dynamic client registration: opens /register so clients that can't be pre-configured (e.g.
   // ChatGPT) can register themselves, no per-client server config. Trust rests on the approval gate,
   // PKCE, and the SDK's per-client exact redirect match at /authorize — so this requires
@@ -83,13 +83,13 @@ export interface AuthConfig {
   // when it was approved, for its token's lifetime: a scope that was not offered then, or was
   // declared later, stays withheld until the person connects again. Tokens issued before any scopes
   // were declared hold every scope. Requests report the granted scopes in their caller.
-  scopes?: ScopeDefinition[];
+  scopes?: Array<ScopeDefinition>;
   // Line above the checkboxes. Defaults to "Also allow this connection to:". Use it to say what
   // every connection can do regardless, so the boxes read as additions.
   scopesPrompt?: string;
   // Scopes granted to requests using staticBearerToken. Defaults to every declared scope. Each entry
   // must name a declared scope.
-  staticBearerScopes?: string[];
+  staticBearerScopes?: Array<string>;
   // When true, skips loading the persisted token store at construction and enables seedTestToken.
   testMode?: boolean;
   // When true, disables the SDK's per-endpoint rate limiting (useful under test load).
@@ -116,7 +116,7 @@ export interface DynamicClientRegistrationConfig {
   // registrations are additionally restricted to these entries — each is an exact redirect URI, a
   // loopback URI (any port may vary), or a host-scoped "https://host/*" pattern accepting any path on
   // that origin (useful when a provider's callback path is ephemeral, e.g. ChatGPT's connector id).
-  allowedRedirectUris?: string[];
+  allowedRedirectUris?: Array<string>;
 }
 
 // The instance returned by createAuth. `routes` is the SDK auth router (discovery + /authorize +
@@ -127,7 +127,7 @@ export interface Auth {
   saveTokens(): void;
   // Returns registered public DCR clients. This remains available while DCR is disabled so an
   // administrator can inspect or permanently revoke credentials that are temporarily rejected.
-  listDynamicClients(): OAuthClientInformationFull[];
+  listDynamicClients(): Array<OAuthClientInformationFull>;
   // Permanently removes one DCR registration and all access tokens issued to it. `removed` is
   // false when clientId does not name a dynamically registered client. Throws without changing
   // memory when the deletion cannot be persisted.
@@ -145,7 +145,7 @@ interface PendingCode {
   clientId: string;
   redirectUri: string;
   expiresAt: number;
-  grantedScopes: string[];
+  grantedScopes: Array<string>;
 }
 
 interface TokenRecord {
@@ -153,16 +153,16 @@ interface TokenRecord {
   clientId?: string;
   // Scopes ticked when this connection was approved. Absent for tokens issued before scopes were
   // declared, which hold every scope.
-  grantedScopes?: string[];
+  grantedScopes?: Array<string>;
 }
 
 interface PersistedAuthMetadata {
   clients?: Record<string, OAuthClientInformationFull>;
   tokenClientIds?: Record<string, string>;
-  tokenGrantedScopes?: Record<string, string[]>;
+  tokenGrantedScopes?: Record<string, Array<string>>;
   // Written by an earlier version that recorded unticked scopes. Tokens listed here are dropped on
   // load: their grants can't be reconstructed safely, so those connections approve again.
-  tokenWithheldScopes?: Record<string, string[]>;
+  tokenWithheldScopes?: Record<string, Array<string>>;
 }
 
 const PERSISTED_METADATA_KEY = '__mcp_server_kit_auth_metadata__';
@@ -217,7 +217,7 @@ class TokenStore {
     try {
       const data: Record<string, unknown> = {};
       const tokenClientIds: Record<string, string> = {};
-      const tokenGrantedScopes: Record<string, string[]> = {};
+      const tokenGrantedScopes: Record<string, Array<string>> = {};
       for (const [token, { expiry, clientId, grantedScopes }] of this.tokens) {
         data[token] = expiry;
         if (clientId) tokenClientIds[token] = clientId;
@@ -270,7 +270,7 @@ class TokenStore {
 
   // clientId is undefined for the pre-registered client and names the registration for a DCR client.
   // grantedScopes is undefined when the app declares no scopes.
-  issueToken(clientId: string | undefined, grantedScopes: string[] | undefined): string {
+  issueToken(clientId: string | undefined, grantedScopes: Array<string> | undefined): string {
     this.prune();
     const token = randomUUID();
     const previous = this.tokens.get(token);
@@ -317,7 +317,7 @@ class TokenStore {
     return client;
   }
 
-  listClients(): OAuthClientInformationFull[] {
+  listClients(): Array<OAuthClientInformationFull> {
     return [...this.clients.values()].map((client) => structuredClone(client));
   }
 
@@ -603,7 +603,7 @@ export function createAuth(config: AuthConfig): Auth {
 
   // The declared scopes a token holds, in declaration order. Granted ids that are no longer declared
   // are ignored; a token with no recorded grants predates scopes and holds every one.
-  function heldScopes(granted: readonly string[] | undefined): string[] {
+  function heldScopes(granted: ReadonlyArray<string> | undefined): Array<string> {
     return granted ? scopeIds.filter((id) => granted.includes(id)) : scopeIds;
   }
 
@@ -612,12 +612,12 @@ export function createAuth(config: AuthConfig): Auth {
   }
 
   // The scopes offered right now, in declaration order.
-  async function offeredScopes(): Promise<ScopeDefinition[]> {
+  async function offeredScopes(): Promise<Array<ScopeDefinition>> {
     const offered = await Promise.all(scopes.map(async (s) => (s.offered ? s.offered() : true)));
     return scopes.filter((_, i) => offered[i]);
   }
 
-  function renderScopes(offered: ScopeDefinition[], ticked: ReadonlySet<string>): string {
+  function renderScopes(offered: Array<ScopeDefinition>, ticked: ReadonlySet<string>): string {
     if (!offered.length) return '';
     const rows = offered
       .map((s) => {

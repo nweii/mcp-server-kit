@@ -7,7 +7,7 @@ export type ToolContent =
   | { type: 'image'; data: string; mimeType: string };
 
 export type ToolResult = {
-  content: ToolContent[];
+  content: Array<ToolContent>;
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };

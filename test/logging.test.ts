@@ -9,7 +9,7 @@ import { createAuditLog } from '../src/index.js';
 import type { ToolResult } from '../src/index.js';
 
 const REDACTED = ['content', 'value', 'template', 'find', 'fields'];
-const dirs: string[] = [];
+const dirs: Array<string> = [];
 
 function freshDir(): string {
   const d = mkdtempSync(join(tmpdir(), 'kit-audit-'));
@@ -21,7 +21,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function readJsonl(dir: string, file: string): Record<string, unknown>[] {
+function readJsonl(dir: string, file: string): Array<Record<string, unknown>> {
   const path = join(dir, file);
   if (!existsSync(path)) return [];
   return readFileSync(path, 'utf-8')

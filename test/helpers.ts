@@ -11,7 +11,7 @@ import { createApp, createAuth, currentCaller, textResult } from '../src/index.j
 import type { AuthConfig, Caller, RegisterTools } from '../src/index.js';
 
 export const REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
-export const open: Server[] = [];
+export const open: Array<Server> = [];
 
 export function closeAll(): void {
   for (const s of open.splice(0)) s.close();
@@ -113,7 +113,7 @@ export async function exchange(base: string, code: string, verifier: string, ext
   });
 }
 
-export type RegisteredClient = { client_id: string; client_secret?: string; redirect_uris: string[]; token_endpoint_auth_method?: string };
+export type RegisteredClient = { client_id: string; client_secret?: string; redirect_uris: Array<string>; token_endpoint_auth_method?: string };
 
 export async function registerPublicClient(base: string, redirectUri = 'com.example.mcp:/oauth/callback') {
   const res = await fetch(`${base}/register`, {
@@ -176,7 +176,7 @@ export async function issueRegisteredToken(base: string, clientId: string, redir
 // A server whose registerTools records the caller it was given, and whose one tool reports the
 // caller its handler sees.
 export async function recordingServer(overrides: Parameters<typeof standup>[0] = {}) {
-  const registered: (Caller | undefined)[] = [];
+  const registered: Array<Caller | undefined> = [];
   const registerTools: RegisterTools = (server, caller) => {
     registered.push(caller);
     server.registerTool('whoami', { description: 'Reports the caller' }, async () => textResult(JSON.stringify(currentCaller() ?? null)));
@@ -199,7 +199,7 @@ export async function callWhoami(base: string, token: string): Promise<Caller> {
   expect(res.status).toBe(200);
   const text = await res.text();
   const line = text.split('\n').find((l) => l.startsWith('data: '));
-  const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: { text: string }[] } };
+  const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: Array<{ text: string }> } };
   return JSON.parse(rpc.result.content[0]!.text) as Caller;
 }
 

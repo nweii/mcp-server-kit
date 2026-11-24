@@ -13,7 +13,7 @@ export interface AccessAuthConfig {
   audience: string;
   // Scopes every Access caller holds. Access grants no scopes of its own, so a server that gates
   // tools by scope declares here what a signed-in user gets.
-  scopes?: string[];
+  scopes?: Array<string>;
 }
 
 // Header Access sets on every request it lets through to the origin.
@@ -57,7 +57,7 @@ function makeKeyStore(certsUrl: string) {
   async function refresh(): Promise<void> {
     const res = await fetch(certsUrl);
     if (!res.ok) throw new Error(`fetching Access keys returned ${res.status}`);
-    const body = (await res.json()) as { keys?: (JsonWebKey & { kid?: string })[] };
+    const body = (await res.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
     const next = new Map<string, KeyObject>();
     for (const jwk of body.keys ?? []) {
       if (typeof jwk.kid !== 'string') continue;
@@ -87,7 +87,7 @@ async function verifyRequest(
   req: Request,
   issuer: string,
   audience: string,
-  scopes: string[],
+  scopes: Array<string>,
   keyFor: (kid: string) => Promise<KeyObject | undefined>,
 ): Promise<AuthInfo | undefined> {
   const jwt = req.headers[ACCESS_JWT_HEADER];

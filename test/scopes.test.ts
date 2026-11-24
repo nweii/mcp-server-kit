@@ -8,7 +8,7 @@ import { REDIRECT, callWhoami, closeAll, exchange, pkce, recordingServer, storeP
 
 afterEach(closeAll);
 
-const SCOPES: ScopeDefinition[] = [
+const SCOPES: Array<ScopeDefinition> = [
   { id: 'notes:write', label: 'Edit notes', hint: 'Create, edit and delete notes.' },
   { id: 'app:control', label: 'Control the app', hint: 'Run app commands.' },
 ];
@@ -25,12 +25,12 @@ async function approvalPage(base: string, query: Record<string, string> = {}): P
 }
 
 // The scopes a checkbox list renders as ticked, in page order.
-function ticked(html: string): string[] {
+function ticked(html: string): Array<string> {
   return [...html.matchAll(/name="grant" value="([^"]+)"( checked)?/g)].filter((m) => m[2]).map((m) => m[1]!);
 }
 
 // Approves with the given boxes ticked and returns the issued token and the token response's scope.
-async function connect(base: string, grants: string[]) {
+async function connect(base: string, grants: Array<string>) {
   const { verifier, challenge } = pkce();
   const res = await fetch(`${base}/authorize`, {
     method: 'POST',
@@ -66,11 +66,11 @@ test('a scope that is not offered right now has no checkbox', async () => {
 test('discovery metadata lists the declared scopes, and omits the list when none are declared', async () => {
   const { base } = await recordingServer({ scopes: SCOPES });
   for (const doc of ['oauth-authorization-server', 'oauth-protected-resource']) {
-    const meta = (await (await fetch(`${base}/.well-known/${doc}`)).json()) as { scopes_supported?: string[] };
+    const meta = (await (await fetch(`${base}/.well-known/${doc}`)).json()) as { scopes_supported?: Array<string> };
     expect(meta.scopes_supported).toEqual(['notes:write', 'app:control']);
   }
   const { base: plain } = await recordingServer();
-  const meta = (await (await fetch(`${plain}/.well-known/oauth-authorization-server`)).json()) as { scopes_supported?: string[] };
+  const meta = (await (await fetch(`${plain}/.well-known/oauth-authorization-server`)).json()) as { scopes_supported?: Array<string> };
   expect(meta.scopes_supported).toBeUndefined();
 });
 

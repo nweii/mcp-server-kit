@@ -17,7 +17,7 @@ const farFuture = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
 const dir = mkdtempSync(join(tmpdir(), 'kit-persist-'));
 const storePath = join(dir, 'tokens.json');
-const children: Subprocess[] = [];
+const children: Array<Subprocess> = [];
 
 // Seed a token into the store before any server starts, so the first process's startup load sees it.
 writeFileSync(storePath, JSON.stringify({ [PRESEEDED]: farFuture }));

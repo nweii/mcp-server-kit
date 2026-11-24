@@ -35,7 +35,7 @@ export interface CreateAppOptions {
   // uptime monitor grants nothing and rotates independently of the /mcp auth.
   healthToken?: string;
   // Allowed CORS origins. Omit or pass null to allow any origin (`*`); pass an array to restrict.
-  corsOrigins?: string[] | null;
+  corsOrigins?: Array<string> | null;
   // Optional liveness probe run on an authorized /health request. Throwing marks the server
   // unhealthy (503); returning normally reports healthy (200).
   healthProbe?: () => void | Promise<void>;
@@ -73,7 +73,7 @@ function makeRequestLogger(): RequestHandler {
   };
 }
 
-function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | null): boolean {
+function setCorsHeaders(req: Request, res: Response, allowedOrigins: Array<string> | null): boolean {
   const origin = req.headers.origin;
 
   if (allowedOrigins === null) {
@@ -94,7 +94,7 @@ function setCorsHeaders(req: Request, res: Response, allowedOrigins: string[] | 
   return true;
 }
 
-function makeOriginGuard(allowedOrigins: string[] | null): RequestHandler {
+function makeOriginGuard(allowedOrigins: Array<string> | null): RequestHandler {
   return (req, res, next) => {
     const origin = req.headers.origin;
     if (allowedOrigins !== null && origin && !allowedOrigins.includes(origin)) {

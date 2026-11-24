@@ -23,7 +23,7 @@ export interface Caller {
   email?: string;
   userId?: string;
   // Scopes this connection was granted. Empty when the auth module declares no scopes.
-  scopes: string[];
+  scopes: Array<string>;
 }
 
 const context = new AsyncLocalStorage<Caller>();
