@@ -17,12 +17,12 @@ export default defineConfig({
     'quality/no-unsafe-dictionary-type': 'off', // Temporary during migration
     'quality/no-conditional-empty-object-spread': 'off', // Temporary during migration
     'quality/no-known-value-widening': 'off', // Temporary during migration
-    'no-console': 'off', // Temporary during migration
+    // The kit reports startup and token-store failures on stderr; console is its operator log.
+    'no-console': 'off',
     'unicorn/consistent-function-scoping': 'off', // Temporary during migration
     'typescript/no-unsafe-return': 'off', // Temporary during migration
     'quality/no-unknown-returns': 'off', // Temporary during migration
     'typescript/no-unsafe-call': 'off', // Temporary during migration
-    'typescript/await-thenable': 'off', // Temporary during migration
     'anti-slop/no-module-mocking': 'error',
     'anti-slop/no-shape-in-symbol-names': 'error',
     'anti-slop/require-safety-comment-for-type-assertion': 'off', // Temporary during migration
@@ -33,6 +33,12 @@ export default defineConfig({
       // Tests build fixtures with casts whose invariant is the test itself.
       files: ['test/**'],
       rules: { 'anti-slop/require-safety-comment-for-type-assertion': 'off' },
+    },
+    {
+      // bun-types declares `expect(promise).rejects` matchers as returning void, but Bun returns a
+      // promise that must be awaited for the assertion to run.
+      files: ['test/**'],
+      rules: { 'typescript/await-thenable': 'off' },
     },
   ],
 });
