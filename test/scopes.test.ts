@@ -26,7 +26,7 @@ async function approvalPage(base: string, query: Record<string, string> = {}): P
 
 // The scopes a checkbox list renders as ticked, in page order.
 function ticked(html: string): Array<string> {
-  return [...html.matchAll(/name="grant" value="([^"]+)"( checked)?/g)].filter((m) => m[2]).map((m) => m[1]);
+  return [...html.matchAll(/name="grant" value="([^"]+)"( checked)?/g)].flatMap((m) => (m[2] ? [m[1]] : []));
 }
 
 // Approves with the given boxes ticked and returns the issued token and the token response's scope.

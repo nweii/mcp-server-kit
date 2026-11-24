@@ -715,8 +715,7 @@ export function createAuth(config: AuthConfig): Auth {
         // The client's own scope request rides along so a re-rendered page starts from it again.
         ['scope', params.scopes?.length ? params.scopes.join(' ') : undefined],
       ]
-        .filter((e): e is [string, string] => e[1] !== undefined)
-        .map(([n, v]) => `<input type="hidden" name="${n}" value="${escapeHtml(v)}">`)
+        .flatMap(([n, v]) => (v === undefined ? [] : [`<input type="hidden" name="${n}" value="${escapeHtml(v)}">`]))
         .join('\n    ');
 
       // Shown on the approval page so the operator can see which client and callback host they are
