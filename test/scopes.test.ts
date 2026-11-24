@@ -26,7 +26,7 @@ async function approvalPage(base: string, query: Record<string, string> = {}): P
 
 // The scopes a checkbox list renders as ticked, in page order.
 function ticked(html: string): Array<string> {
-  return [...html.matchAll(/name="grant" value="([^"]+)"( checked)?/g)].filter((m) => m[2]).map((m) => m[1]!);
+  return [...html.matchAll(/name="grant" value="([^"]+)"( checked)?/g)].filter((m) => m[2]).map((m) => m[1]);
 }
 
 // Approves with the given boxes ticked and returns the issued token and the token response's scope.
@@ -57,7 +57,7 @@ test('each offered scope is a ticked checkbox under the prompt, with its hint', 
 });
 
 test('a scope that is not offered right now has no checkbox', async () => {
-  const { base } = await recordingServer({ scopes: [SCOPES[0]!, { ...SCOPES[1]!, offered: async () => false }] });
+  const { base } = await recordingServer({ scopes: [SCOPES[0], { ...SCOPES[1], offered: async () => false }] });
   const html = await approvalPage(base);
   expect(html).toContain('value="notes:write"');
   expect(html).not.toContain('value="app:control"');
@@ -106,7 +106,7 @@ test('a posted scope that was not declared is never granted', async () => {
 
 test('a scope that was not offered at approval stays withheld after it is offered', async () => {
   let offered = false;
-  const scopes = [SCOPES[0]!, { ...SCOPES[1]!, offered: () => offered }];
+  const scopes = [SCOPES[0], { ...SCOPES[1], offered: () => offered }];
   const { base } = await recordingServer({ scopes });
   const token = await connect(base, ['notes:write', 'app:control']);
   expect(token.scope).toBe('notes:write');
@@ -158,7 +158,7 @@ test('a token stored with unticked scopes by an earlier version is dropped, not 
 
 test('a scope declared after a connection was approved is withheld from it', async () => {
   const tokenStorePath = storePath();
-  const before = await recordingServer({ tokenStorePath, testMode: false, scopes: [SCOPES[0]!] });
+  const before = await recordingServer({ tokenStorePath, testMode: false, scopes: [SCOPES[0]] });
   const token = await connect(before.base, ['notes:write']);
   const after = await recordingServer({ tokenStorePath, testMode: false, scopes: SCOPES });
   expect((await callWhoami(after.base, token.access_token)).scopes).toEqual(['notes:write']);
@@ -176,6 +176,6 @@ test('the static bearer gets every scope by default, or the configured set', asy
 test('scope config errors stop the server at construction', () => {
   const base = { baseUrl: 'http://localhost:1', clientId: 'c', displayName: 'd', tokenStorePath: storePath(), approvalPassword: 'p', testMode: true };
   expect(() => createAuth({ ...base, scopes: SCOPES, staticBearerScopes: ['nope'] })).toThrow(/not a declared scope/);
-  expect(() => createAuth({ ...base, scopes: [SCOPES[0]!, SCOPES[0]!] })).toThrow(/unique/);
+  expect(() => createAuth({ ...base, scopes: [SCOPES[0], SCOPES[0]] })).toThrow(/unique/);
   expect(() => createAuth({ ...base, scopes: [{ id: 'has space', label: 'x' }] })).toThrow(/scope token/);
 });

@@ -132,7 +132,7 @@ test('a freshly issued token is written to the store and survives a restart', as
   expect(persisted[PRESEEDED]).toBe(farFuture);
 
   // Stop the first process and start a fresh one against the same store.
-  await stop(children[0]!);
+  await stop(children[0]);
   const secondBase = await startServer(await freePort());
 
   // The new process, loading only from disk, still honors the token issued by the old process.

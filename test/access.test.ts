@@ -82,7 +82,7 @@ async function callerOf(res: Response): Promise<Caller> {
   const text = await res.text();
   const line = text.split('\n').find((l) => l.startsWith('data: '));
   const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: Array<{ text: string }> } };
-  return JSON.parse(rpc.result.content[0]!.text) as Caller;
+  return JSON.parse(rpc.result.content[0].text) as Caller;
 }
 
 test('a Managed OAuth request runs as its connection, carrying the signed-in user', async () => {

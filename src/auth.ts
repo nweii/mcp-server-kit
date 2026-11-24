@@ -547,7 +547,7 @@ export function createAuth(config: AuthConfig): Auth {
         token_endpoint_auth_method: clientSecret ? 'client_secret_post' : 'none',
         grant_types: ['authorization_code'],
         response_types: ['code'],
-      } as OAuthClientInformationFull)
+      })
     : undefined;
 
   function unsafeDynamicClientReason(client: OAuthClientInformationFull): string | undefined {
@@ -561,7 +561,7 @@ export function createAuth(config: AuthConfig): Auth {
     }
     const hardened = !!dynamicRedirectUris?.length;
     if (hardened) {
-      if (!client.redirect_uris.every((uri) => dynamicRedirectUris!.some((allowed) => redirectMatchesAllowed(uri, allowed)))) {
+      if (!client.redirect_uris.every((uri) => dynamicRedirectUris.some((allowed) => redirectMatchesAllowed(uri, allowed)))) {
         return 'Every redirect_uri must be allowed by dynamicClientRegistration.allowedRedirectUris';
       }
     } else if (client.redirect_uris.some(isInsecureHttpRedirect)) {
@@ -786,7 +786,7 @@ export function createAuth(config: AuthConfig): Auth {
         token_type: 'bearer',
         expires_in: TOKEN_TTL_MS / 1000,
         ...(scopeIds.length ? { scope: granted.join(' ') } : {}),
-      } as OAuthTokens;
+      };
     },
 
     // Refresh tokens are intentionally not issued or accepted: tokens live 30 days and clients

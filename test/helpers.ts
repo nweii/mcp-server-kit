@@ -200,7 +200,7 @@ export async function callWhoami(base: string, token: string): Promise<Caller> {
   const text = await res.text();
   const line = text.split('\n').find((l) => l.startsWith('data: '));
   const rpc = JSON.parse(line ? line.slice(6) : text) as { result: { content: Array<{ text: string }> } };
-  return JSON.parse(rpc.result.content[0]!.text) as Caller;
+  return JSON.parse(rpc.result.content[0].text) as Caller;
 }
 
 export async function staticClientToken(base: string): Promise<string> {
