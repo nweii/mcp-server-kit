@@ -23,7 +23,6 @@ export default defineConfig({
     'no-promise-executor-return': 'off', // Temporary during migration
     'typescript/no-unsafe-return': 'off', // Temporary during migration
     'quality/no-unknown-returns': 'off', // Temporary during migration
-    'typescript/no-misused-promises': 'off', // Temporary during migration
     'quality/no-array-filter-map': 'off', // Temporary during migration
     'typescript/no-unsafe-call': 'off', // Temporary during migration
     'typescript/no-floating-promises': 'off', // Temporary during migration
