@@ -11,7 +11,8 @@ export default defineConfig({
   ],
   rules: {
     ...cloudflare.rules,
-    'curly': 'off', // Temporary during migration
+    // Single-line guard clauses stay brace-less; multi-line bodies need braces.
+    curly: ['error', 'multi-line'],
     'typescript/no-unsafe-type-assertion': 'off', // Temporary during migration
     'typescript/array-type': 'off', // Temporary during migration
     'unicorn/prefer-node-protocol': 'off', // Temporary during migration
