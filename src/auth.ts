@@ -185,7 +185,10 @@ class TokenStore {
 
   private load(): void {
     try {
+      // SAFETY: the store is this process's own 0600 file; every value read from it is type-checked
+      // below (expiry, client id, scopes) or validated by isPersistedPublicClient.
       const data = JSON.parse(readFileSync(this.storePath, 'utf8')) as Record<string, unknown>;
+      // SAFETY: as above; each metadata field is type-checked or validated where it is read.
       const metadata = data[PERSISTED_METADATA_KEY] as PersistedAuthMetadata | undefined;
       const tokenClientIds = metadata?.tokenClientIds ?? {};
       const tokenGrantedScopes = metadata?.tokenGrantedScopes ?? {};
@@ -194,9 +197,10 @@ class TokenStore {
       for (const [token, expiry] of Object.entries(data)) {
         if (typeof expiry === 'number' && expiry > now && !(token in legacyWithheld)) {
           const granted = tokenGrantedScopes[token];
+          const clientId = tokenClientIds[token];
           this.tokens.set(token, {
             expiry,
-            clientId: tokenClientIds[token],
+            clientId: typeof clientId === 'string' ? clientId : undefined,
             ...(Array.isArray(granted) ? { grantedScopes: granted.filter((s) => typeof s === 'string') } : {}),
           });
         }
@@ -365,6 +369,7 @@ class TokenStore {
 
 function isPersistedPublicClient(clientId: string, client: unknown): client is OAuthClientInformationFull {
   if (!client || typeof client !== 'object') return false;
+  // SAFETY: client is a non-null object, and every field read below is type-checked.
   const record = client as Partial<OAuthClientInformationFull>;
   return record.client_id === clientId && Array.isArray(record.redirect_uris) && record.redirect_uris.every((uri) => typeof uri === 'string');
 }
@@ -431,7 +436,7 @@ function describeRequester(client: OAuthClientInformationFull, redirectUri: stri
   } catch {
     host = undefined;
   }
-  const name = (client as { client_name?: string }).client_name?.trim() || undefined;
+  const name = client.client_name?.trim() || undefined;
   if (name && host) return `${name} (${host})`;
   return name ?? host;
 }
@@ -595,6 +600,8 @@ export function createAuth(config: AuthConfig): Auth {
   };
   if (dynamicRegistration) {
     clientsStore.registerClient = (metadata) => {
+      // SAFETY: the SDK's registration handler has already parsed the metadata and assigned client_id;
+      // unsafeDynamicClientReason checks the fields this server relies on.
       const client = metadata as OAuthClientInformationFull;
       const reason = unsafeDynamicClientReason(client);
       if (reason) throw new InvalidClientMetadataError(reason);
@@ -703,6 +710,8 @@ export function createAuth(config: AuthConfig): Auth {
     // password-gated form on POST via res.req.
     async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
       const req = res.req;
+      // SAFETY: urlencoded fields may be arrays; password is stringified and grant is filtered to
+      // strings where they are read.
       const body = (req.body ?? {}) as Record<string, string>;
 
       const hidden = [
@@ -733,6 +742,7 @@ export function createAuth(config: AuthConfig): Auth {
       }
 
       // POST — the approval form was submitted. Checkboxes post only when ticked.
+      // SAFETY: widening to unknown; the value is filtered to strings on the next line.
       const grantField = (body as Record<string, unknown>).grant;
       const granted = new Set((Array.isArray(grantField) ? grantField : [grantField]).filter((v): v is string => typeof v === 'string'));
       if (passwordGate && !passwordValid((body.password ?? '').toString())) {
@@ -815,7 +825,7 @@ export function createAuth(config: AuthConfig): Auth {
           if (!dynamicClient || unsafeDynamicClientReason(dynamicClient)) {
             throw new InvalidTokenError('invalid or expired access token');
           }
-          const clientName = (dynamicClient as { client_name?: string }).client_name?.trim() || undefined;
+          const clientName = dynamicClient.client_name?.trim() || undefined;
           return { token, clientId: record.clientId, scopes, expiresAt, extra: callerExtra('dynamic', clientName) };
         }
         // A token with no registration belongs to the pre-registered client. Without one configured,

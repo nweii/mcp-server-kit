@@ -38,11 +38,10 @@ flowchart TD
 - Agents stop at a PR for the maintainer to merge. The one exception: an agent may squash-merge its own dependency or security update once its checks pass and Codex review is clean.
 - The kit has no CI and no branch protection, so only these instructions hold the stopping point.
 - Consumers pin the kit by git commit. A kit release reaches a server only through that server's own PR, which reviews the kit diff before bumping the lockfile.
-- Rules the lint config turns off carry their reason beside them. Enable a deferred rule in its own change, with its fixes.
+- Rules the lint config turns off carry their reason beside them. Source type assertions carry a `SAFETY:` comment naming the check that makes them sound, in place of a ban on unsafe assertions.
 
 ## Operating evidence
 
-- Eight preset rules and one anti-slop rule are deferred: about 150 findings in existing code, most of them type assertions at the SDK and Express boundaries.
 - `bun run test` needs IPv6 loopback, and three token-store persistence tests fail when run as root, as in some cloud sandboxes.
 - Last shaped with factory-shaping 0.4.0.
 - Review the factory after five merged PRs, or after the maintainer has to step in the same way twice.

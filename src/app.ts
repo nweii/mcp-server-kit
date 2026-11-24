@@ -196,12 +196,14 @@ export function createApp(opts: CreateAppOptions): Express {
 
   app.post('/mcp', originGuard, authMiddleware, async (req, res) => {
     if (!opts.testMode) {
+      // SAFETY: only used for a log line; optional chaining tolerates any body.
       const body = req.body as { method?: string; params?: { name?: string } };
       const mcpMethod = body?.method ?? '?';
       const toolName = body?.params?.name;
       console.log(`[${ts()}] MCP ${mcpMethod}${toolName ? ` (${toolName})` : ''}`);
     }
     // Everything the request does, from tool registration to each tool handler, runs as its caller.
+    // SAFETY: the auth middleware sets req.auth; a missing one yields an undefined caller.
     const caller = callerFromAuthInfo((req as Request & { auth?: AuthInfo }).auth);
     await runAsCaller(caller, () => nodeMcpHandler(req, res, req.body));
   });

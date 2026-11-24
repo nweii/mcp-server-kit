@@ -148,6 +148,8 @@ export function createAuditLog(config: AuditLogConfig): AuditLogger {
   }
 
   function registerLogged(server: McpServer, name: string, def: ToolDef, handler: ToolHandler) {
+    // SAFETY: registerTool's overloads tie the handler to the schema in def, which this wrapper
+    // passes through untouched; the handler sees exactly the arguments the SDK validated.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (server.registerTool as any)(name, def, async (args: unknown) => {
       const start = Date.now();

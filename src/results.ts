@@ -29,6 +29,8 @@ export function jsonResult(
   const text = JSON.stringify(data, null, 2);
   if (!structured) return { content: [{ type: 'text' as const, text }] };
 
+  // SAFETY: the cast applies only to a non-null, non-array object, which serializes as a
+  // string-keyed record.
   const structuredContent: Record<string, unknown> | undefined = Array.isArray(data)
     ? { items: data }
     : data && typeof data === 'object'
@@ -58,6 +60,7 @@ export function structuredResult<T extends object>(
   const text = toText ? toText(parsed) : JSON.stringify(parsed, null, 2);
   return {
     content: [{ type: 'text' as const, text }],
+    // SAFETY: T extends object, and the schema output serializes as a string-keyed record.
     structuredContent: parsed as Record<string, unknown>,
   };
 }
