@@ -629,7 +629,7 @@ test('full PKCE flow: approve → exchange → token accepted on /mcp, with the 
   const body = (await tok.json()) as { access_token?: string; token_type?: string; expires_in?: number };
   expect(body.access_token).toBeTruthy();
   expect(body.token_type).toBe('bearer');
-  expect(body.expires_in).toBe(2592000);
+  expect(body.expires_in).toBe(2_592_000);
 
   const mcp = await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${body.access_token}` } });
   expect(mcp.status).toBe(405); // a valid token reaches the POST-only handler

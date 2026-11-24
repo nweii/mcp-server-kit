@@ -25,7 +25,6 @@ export default defineConfig({
     'quality/no-unknown-returns': 'off', // Temporary during migration
     'typescript/no-misused-promises': 'off', // Temporary during migration
     'quality/no-array-filter-map': 'off', // Temporary during migration
-    'unicorn/numeric-separators-style': 'off', // Temporary during migration
     'typescript/no-unsafe-call': 'off', // Temporary during migration
     'typescript/no-floating-promises': 'off', // Temporary during migration
     'typescript/await-thenable': 'off', // Temporary during migration
