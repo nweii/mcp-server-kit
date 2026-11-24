@@ -71,7 +71,7 @@ export function createFixtureApp(port = 0) {
 // Running the file directly starts a real listener (the quickstart entry point and the target of
 // the spawned-process persistence test).
 if (import.meta.main) {
-  const port = parseInt(process.env.PORT ?? '3000', 10);
+  const port = Number.parseInt(process.env.PORT ?? '3000', 10);
   const { app, auth } = createFixtureApp(port);
   startServer({
     app,
