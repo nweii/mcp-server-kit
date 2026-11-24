@@ -18,7 +18,6 @@ export default defineConfig({
     'quality/no-conditional-empty-object-spread': 'off', // Temporary during migration
     'quality/no-known-value-widening': 'off', // Temporary during migration
     'no-console': 'off', // Temporary during migration
-    'unicorn/no-hex-escape': 'off', // Temporary during migration
     'unicorn/consistent-function-scoping': 'off', // Temporary during migration
     'typescript/no-non-null-assertion': 'off', // Temporary during migration
     'no-promise-executor-return': 'off', // Temporary during migration

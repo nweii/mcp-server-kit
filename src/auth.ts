@@ -476,7 +476,7 @@ export function createAuth(config: AuthConfig): Auth {
   // Scope ids travel in space-separated OAuth scope strings and persist in the token store, so a
   // malformed or duplicate id is a config error caught at startup.
   for (const id of scopeIds) {
-    if (!/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(id)) throw new Error(`scope id "${id}" must be a non-empty OAuth scope token (no spaces, quotes or backslashes)`);
+    if (!/^[\u0021\u0023-\u005b\u005d-\u007e]+$/.test(id)) throw new Error(`scope id "${id}" must be a non-empty OAuth scope token (no spaces, quotes or backslashes)`);
   }
   if (new Set(scopeIds).size !== scopeIds.length) throw new Error('scope ids must be unique');
   const unknownBearerScope = config.staticBearerScopes?.find((id) => !scopeIds.includes(id));
