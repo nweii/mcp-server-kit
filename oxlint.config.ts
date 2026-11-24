@@ -21,7 +21,6 @@ export default defineConfig({
     'unicorn/consistent-function-scoping': 'off', // Temporary during migration
     'typescript/no-non-null-assertion': 'off', // Temporary during migration
     'no-promise-executor-return': 'off', // Temporary during migration
-    'unicorn/prefer-string-replace-all': 'off', // Temporary during migration
     'unicorn/catch-error-name': 'off', // Temporary during migration
     'typescript/no-unsafe-return': 'off', // Temporary during migration
     'quality/no-unknown-returns': 'off', // Temporary during migration
