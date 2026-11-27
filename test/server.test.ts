@@ -366,3 +366,27 @@ test('restricted CORS allows Origin-less POST /mcp requests', async () => {
 
   expect(res.status).toBe(200);
 });
+
+test('tools/list marks read-only tools non-destructive unless they say otherwise', async () => {
+  const app = createApp({
+    name: 'annotation-fixture',
+    version: '0.0.0',
+    authMiddleware: passThrough as never,
+    testMode: true,
+    registerTools(server) {
+      const noop = async () => ({ content: [] });
+      server.registerTool('read', { annotations: { readOnlyHint: true } }, noop);
+      server.registerTool('read_flagged', { annotations: { readOnlyHint: true, destructiveHint: true } }, noop);
+      server.registerTool('write', { annotations: { readOnlyHint: false } }, noop);
+      server.registerTool('bare', {}, noop);
+    },
+  });
+  const base = await listen(app);
+  const res = await mcp(base, null, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const tools = parseRpc(await res.text()).result.tools as Array<{ name: string; annotations?: Record<string, unknown> }>;
+  const annotations = Object.fromEntries(tools.map((tool) => [tool.name, tool.annotations]));
+  expect(annotations.read).toEqual({ readOnlyHint: true, destructiveHint: false });
+  expect(annotations.read_flagged).toEqual({ readOnlyHint: true, destructiveHint: true });
+  expect(annotations.write).toEqual({ readOnlyHint: false });
+  expect(annotations.bare).toBeUndefined();
+});

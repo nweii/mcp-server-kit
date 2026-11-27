@@ -12,5 +12,6 @@ export { startServer } from './process.js';
 export type { StartServerOptions } from './process.js';
 export { textResult, jsonResult, structuredResult, errorResult } from './results.js';
 export type { ToolContent, ToolResult } from './results.js';
+export { withAnnotationDefaults } from './annotations.js';
 export { createAuditLog } from './logging.js';
 export type { AuditLogConfig, AuditLogger, ToolCallLog, FeedbackLog } from './logging.js';
