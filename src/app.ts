@@ -9,6 +9,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { AuthInfo } from '@modelcontextprotocol/server-legacy/auth';
 import type { Auth } from './auth.js';
+import { applyAnnotationDefaults } from './annotations.js';
 import { callerFromAuthInfo, currentCaller, runAsCaller } from './caller.js';
 import type { Caller } from './caller.js';
 
@@ -187,6 +188,7 @@ export function createApp(opts: CreateAppOptions): Express {
         { name: opts.name, version: opts.version },
         { maxToolInputElements },
       );
+      applyAnnotationDefaults(server);
       await opts.registerTools(server, currentCaller());
       return server;
     },

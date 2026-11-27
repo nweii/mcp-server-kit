@@ -84,6 +84,7 @@ bun run fixture/server.ts
 - **Request logging** — one line per request with client IP, method, path, status, and duration. Suppressed when `testMode: true`.
 - **`GET /health`** — returns `404` when no `healthToken` is configured, `401` on a missing or wrong bearer, and `200 { ok, version, uptime_seconds }` on a valid one. Pass an optional `healthProbe` (an async liveness check); if it throws, health responds `503 { ok: false, … }`.
 - **`/mcp`** — `POST` serves MCP `2026-07-28` and legacy 2025-era stateless HTTP through one `createMcpHandler` factory, with a fresh `McpServer` built from your `registerTools` for every request and guarded by your `authMiddleware`. `GET` and `DELETE` return `405` (no standalone SSE, no session to delete in stateless mode).
+- **Tool annotations** — a tool registered with `readOnlyHint: true` and no `destructiveHint` is listed with `destructiveHint: false`. The spec defaults `destructiveHint` to true, and some clients read it without checking `readOnlyHint`, so they label such tools as able to delete data. An explicit `destructiveHint` is kept. `withAnnotationDefaults` exposes the same rule.
 
 ### Options
 
